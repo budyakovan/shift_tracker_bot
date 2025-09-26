@@ -250,6 +250,49 @@ class UserRepository:
                 return False
             return str(row[0]).strip().lower() == "admin"
 
+    def update_all_users(self) -> int:
+        """
+        Нормализует username/имена в таблице users:
+          - убирает ведущий '@' у username
+          - подрезает пробелы у first_name/last_name
+          - пустые строки превращает в NULL
+        Возвращает количество реально обновлённых строк.
+        """
+        try:
+            conn = db_connection.get_connection()
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        WITH prepared AS (
+                            SELECT
+                                u.user_id,
+                                NULLIF(REGEXP_REPLACE(COALESCE(u.username, ''), '^\s*@', ''), '')      AS new_username,
+                                NULLIF(BTRIM(COALESCE(u.first_name, '')), '')                           AS new_first_name,
+                                NULLIF(BTRIM(COALESCE(u.last_name,  '')), '')                           AS new_last_name
+                            FROM users u
+                        ),
+                        diffs AS (
+                            SELECT u.user_id, p.new_username, p.new_first_name, p.new_last_name
+                            FROM users u
+                            JOIN prepared p USING(user_id)
+                            WHERE (u.username   IS DISTINCT FROM p.new_username)
+                               OR (u.first_name IS DISTINCT FROM p.new_first_name)
+                               OR (u.last_name  IS DISTINCT FROM p.new_last_name)
+                        )
+                        UPDATE users u
+                        SET username   = d.new_username,
+                            first_name = d.new_first_name,
+                            last_name  = d.new_last_name,
+                            updated_at = NOW()
+                        FROM diffs d
+                        WHERE u.user_id = d.user_id
+                        RETURNING u.user_id
+                    """)
+                    changed = cur.rowcount or 0
+            return changed
+        except Exception as e:
+            logger.error(f"Error updating all users: {e}")
+            return 0
 
 class ShiftRepository:
     def get_shift_settings(self, schedule_id: int, schedule_type: str = 'standard') -> Dict:

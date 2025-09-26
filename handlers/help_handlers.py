@@ -70,7 +70,6 @@ async def help_sick_short_command(update: Update, context: ContextTypes.DEFAULT_
 async def help_admin_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP_ADMIN_ALL_FULL, parse_mode="HTML")
 
-
 async def help_duties_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP_DUTIES_FULL, parse_mode="HTML")
 

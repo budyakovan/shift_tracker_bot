@@ -289,16 +289,16 @@ async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lines: list[str] = []
     if pending:
-        lines.append("⏳ Пользователи, ожидающие авторизации:")
+        lines.append("<b>⏳ Пользователи, ожидающие авторизации:</b>")
         for u in pending:
             tail = f" @{escape(u['username'])}" if u.get("username") else ""
             lines.append(f"❔ <code>{u['user_id']}</code> — {escape(display_name(u))}{tail}")
         lines.append("")
 
-    lines.append("👥 Зарегистрированные пользователи:")
+    lines.append("<b>👥 Зарегистрированные пользователи:</b>\n")
     if approved:
         for u in approved:
-            icon = "👑" if str(u.get("role", "")).lower() == "admin" else "👤"
+            icon = "🔸" if str(u.get("role", "")).lower() == "admin" else "🔹"
             tail = f" @{escape(u['username'])}" if u.get("username") else ""
             lines.append(f"{icon} <code>{u['user_id']}</code> — {escape(display_name(u))}{tail}")
     else:
@@ -497,7 +497,7 @@ async def admin_list_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @require_admin
 async def admin_update_all_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Служебное обновление профилей: username/имена из Telegram."""
+    """Обновление профилей (username/имена) в БД и показ результата."""
     try:
         from database import user_repository as user_repo
     except Exception as e:
@@ -505,11 +505,37 @@ async def admin_update_all_users(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     updater = _try_repo_funcs(user_repo, ("update_all_users", "refresh_all_users", "admin_update_all_users"))
-    ok = _safe_call(updater)
-    if ok is None:
+    res = _safe_call(updater)
+
+    # Нет функции в репозитории или вызов не удался
+    if res is None:
         await update.message.reply_text("❌ Нет функции обновления в репозитории пользователей")
-    else:
-        await update.message.reply_text("🔄 Обновление профилей инициировано")
+        return
+
+    # Если репозиторий возвращает целое — это количество обновлённых строк
+    if isinstance(res, int):
+        if res > 0:
+            await update.message.reply_text(f"✅ Обновлено профилей: <b>{res}</b>", parse_mode="HTML")
+        else:
+            await update.message.reply_text("ℹ️ Изменений не найдено")
+        return
+
+    # На всякий случай: если вернули dict со счётчиком
+    if isinstance(res, dict) and "updated" in res:
+        n = int(res.get("updated") or 0)
+        if n > 0:
+            await update.message.reply_text(f"✅ Обновлено профилей: <b>{n}</b>", parse_mode="HTML")
+        else:
+            await update.message.reply_text("ℹ️ Изменений не найдено")
+        return
+
+    # Фолбэк на старую реализацию (True/False)
+    if isinstance(res, bool):
+        await update.message.reply_text("✅ Готово" if res else "❌ Обновление не выполнено")
+        return
+
+    # Непредвидённый формат
+    await update.message.reply_text("ℹ️ Обновление выполнено, но формат ответа неизвестен")
 
 # Алиас под импорт в main.py
 async def update_all_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
