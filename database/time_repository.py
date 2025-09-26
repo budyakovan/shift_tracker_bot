@@ -5,6 +5,47 @@ from database.group_repository import list_groups, list_users_in_group
 from services.shift_calculator import ShiftCalculator
 
 logger = logging.getLogger(__name__)
+def list_group_users(group_key: str) -> list[dict]:
+    """
+    Вернёт участников группы с позицией.
+    Формат: [{"user_id": int, "full_name": str, "username": str|None, "pos": int}, ...]
+    """
+    with db_connection.connect() as conn, conn.cursor() as cur:
+        # получаем id группы по ключу
+        cur.execute("SELECT id FROM time_groups WHERE key = %s", (group_key,))
+        row = cur.fetchone()
+        if not row:
+            return []
+        group_id = row[0]
+
+        # выбираем участников
+        cur.execute(
+            """
+            SELECT 
+                tgu.user_id,
+                COALESCE(u.full_name,
+                         NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''),
+                         u.display_name,
+                         CAST(u.user_id AS TEXT)) AS full_name,
+                u.username,
+                tgu.pos
+            FROM time_group_users AS tgu
+            LEFT JOIN users AS u ON u.id = tgu.user_id
+            WHERE tgu.group_id = %s
+            ORDER BY tgu.pos ASC, tgu.user_id ASC
+            """,
+            (group_id,),
+        )
+        res = []
+        for user_id, full_name, username, pos in cur.fetchall():
+            res.append({
+                "user_id": user_id,
+                "full_name": full_name or "",
+                "username": username or None,
+                "pos": pos if pos is not None else 0,
+            })
+        return res
+
 
 def delete_time_group(group_key: str) -> bool:
     """Удалить тайм-группу по ключу. Возвращает True, если что-то удалилось."""
@@ -368,7 +409,8 @@ def create_time_group(
     epoch,                     # str | datetime.date | datetime.datetime
     period_days: int,
     rotation_dir: int = 1,
-    tz_name: str | None = None,   # <-- игнорируем, tz берём из профиля
+    tz_name: str | None = None,   # игнорируем, tz берём из профиля
+    name: str | None = None,      # ✅ НОВОЕ: «человеческое» имя группы
 ):
     """Создать/обновить тайм-группу. Часовой пояс ВСЕГДА наследуем от профиля."""
     # --- нормализация epoch ---
@@ -400,10 +442,14 @@ def create_time_group(
         )
         prof = cur.fetchone()
         if not prof:
-            raise ValueError(f"Профиль времени '{profile_key}' не найден. Сначала создайте его (/admin_time_profile_create).")
+            raise ValueError(
+                f"Профиль времени '{profile_key}' не найден. Сначала создайте его (/admin_time_profile_create)."
+            )
 
         profile_id, profile_name, prof_tz_name, prof_tz_offset = prof
-        group_name = group_key  # или можешь подставлять profile_name — на твой вкус
+
+        # ✅ имя группы: предпочтение явному name; иначе можно взять profile_name; fallback — group_key
+        group_name = (name or profile_name or group_key).strip()
 
         # 2) upsert группы, tz берём из профиля
         cur.execute(
@@ -429,8 +475,8 @@ def create_time_group(
                 epoch_date,
                 period_days,
                 rotation_dir,
-                prof_tz_name,       # <-- из профиля
-                prof_tz_offset,     # <-- из профиля
+                prof_tz_name,       # из профиля
+                prof_tz_offset,     # из профиля
             ),
         )
         row = cur.fetchone()

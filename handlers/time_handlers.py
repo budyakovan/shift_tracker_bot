@@ -1,4 +1,4 @@
-import logging, re
+import logging, re, html
 from datetime import datetime, date, timedelta
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -53,36 +53,71 @@ def _parse_epoch_date(s: str) -> date:
 
 @require_admin
 async def admin_time_groups_create(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # ожидаем как минимум 4 аргумента
     if len(context.args) < 4:
         await update.message.reply_text(
-            "❌ Использование: /admin_time_groups_create <group_key> <profile_key> <DD.MM.YYYY> <period_days>"
+            "❌ Использование:\n"
+            "/admin_time_groups_create <group_key> <profile_key> <DD.MM.YYYY|YYYY-MM-DD> <period_days> [\"Название группы\"]"
         )
         return
 
     group_key = context.args[0].strip()
     profile_key = context.args[1].strip()
-    epoch = context.args[2].strip()
+    epoch_raw = context.args[2].strip()
+
+    # period
     try:
         period = int(context.args[3])
-    except ValueError:
-        await update.message.reply_text("❌ period_days должен быть числом")
+        if period <= 0:
+            raise ValueError()
+    except Exception:
+        await update.message.reply_text("❌ period_days должен быть положительным целым числом")
+        return
+
+    # optional name (всё, что после 4-го аргумента)
+    name = " ".join(context.args[4:]).strip() if len(context.args) > 4 else ""
+    # если имя обёрнуто в кавычки — уберём их
+    if (name.startswith('"') and name.endswith('"')) or (name.startswith("'") and name.endswith("'")):
+        name = name[1:-1].strip()
+    # дефолт, если не передали
+    if not name:
+        name = group_key
+
+    # нормализация даты: поддерживаем DD.MM.YYYY и YYYY-MM-DD -> сохраняем как YYYY-MM-DD
+    def normalize_date(s: str) -> str:
+        for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(s, fmt).date().isoformat()
+            except ValueError:
+                pass
+        # если совсем нестандартно — пробуем оставить как есть, но лучше упасть
+        raise ValueError("Некорректная дата. Используй DD.MM.YYYY или YYYY-MM-DD")
+
+    try:
+        epoch_iso = normalize_date(epoch_raw)
+    except ValueError as e:
+        await update.message.reply_text(f"❌ {e}")
         return
 
     try:
-        ok = time_repo.create_time_group(group_key, profile_key, epoch, period)
+        # ВАЖНО: расширь сигнатуру time_repo.create_time_group, чтобы принимал name=...
+        # например: def create_time_group(group_key, profile_key, epoch, period, name=None): ...
+        ok = time_repo.create_time_group(group_key, profile_key, epoch_iso, period, name=name)
     except ValueError as e:
-        # ловим ситуацию, когда нет такого профиля
         await update.message.reply_text(f"❌ Ошибка: {e}")
         return
     except Exception as e:
-        # любой другой сбой
-        await update.message.reply_text(f"❌ Не удалось создать группу: {e}")
+        await update.message.reply_text(f"❌ Не удалось создать/обновить группу: {e}")
         return
 
+    # подтверждение
+    gk = html.escape(group_key)
+    pk = html.escape(profile_key)
+    nm = html.escape(name)
     await update.message.reply_text(
-        f"✅ Тайм-группа <b>{group_key}</b> создана:\n"
-        f"• профиль: {profile_key}\n"
-        f"• эпоха: {epoch}\n"
+        f"✅ Тайм-группа <b>{nm}</b> (<code>{gk}</code>) создана/обновлена:\n"
+        f"• профиль: <code>{pk}</code>\n"
+        f"• эпоха: {epoch_iso}\n"
         f"• период: {period} д.",
         parse_mode="HTML",
     )
@@ -265,46 +300,73 @@ async def admin_time_groups_list(update: Update, context: ContextTypes.DEFAULT_T
             await update.message.reply_text("Пока нет тайм-групп.")
             return
 
-        lines: list[str] = ["📋 <b>Список тайм-групп:</b>", ""]
+        def fmt_epoch(v):
+            if isinstance(v, datetime):
+                return v.date().isoformat()
+            if isinstance(v, date):
+                return v.isoformat()
+            return str(v).strip() if v else "—"
+
+        lines: list[str] = ["⏰ <b>Список тайм-групп:</b>", ""]
+
         for g in rows:
             key = g["key"]
             info = time_repo.get_group_info(key) or {}
-            name = (info.get("name") or key or "").strip()
-            profile_key = (info.get("profile_key") or "").strip()
-            epoch = info.get("epoch")  # date или None
+
+            # данные
+            raw_name = (info.get("name") or key or "").strip()
+            name = html.escape(raw_name)
+            key_html = html.escape(key)
+            profile_key = html.escape((info.get("profile_key") or "").strip())
+            epoch = fmt_epoch(info.get("epoch"))
             period = int(info.get("period") or info.get("rotation_period_days") or 8)
 
-            # Часовой пояс / сдвиг
-            tz_name = (info.get("tz_name") or info.get("tz") or "Europe/Moscow").strip()
+            tz_name = html.escape((info.get("tz_name") or info.get("tz") or "Europe/Moscow").strip())
             try:
                 offset = int(info.get("tz_offset_hours") or 0)
             except Exception:
                 offset = 0
 
-            # Заголовок группы: “Группа <Имя> (<key>)” — если имя похоже на “Группа …”, не дублируем
-            if name.lower().startswith("группа "):
-                header = f"• {name} (<code>{key}</code>)"
-            else:
-                header = f"• Группа {name} (<code>{key}</code>)"
+            # заголовок
+            header = f"👥 {name} (<code>{key_html}</code>)" if raw_name.lower().startswith("группа ") \
+                     else f"👥 Группа {name} (<code>{key_html}</code>)"
 
+            # блок инфо
             lines.append(header)
-            lines.append(
-                f"   Профиль: <code>{profile_key}</code> | Эпоха: {epoch} | Период: {period} дн."
-            )
-            lines.append(
-                f"   TZ: {tz_name} ({offset}ч)"
-            )
+            lines.append(f"       Профиль: <code>{profile_key}</code>")
+            lines.append(f"       Эпоха: {epoch}  Период: {period} дн.")
+            lines.append(f"       TZ: {tz_name} ({offset}ч)")
 
-        # Разделитель + короткая шпаргалка команд
-        lines.append("")
+            # участники из get_group_info -> "members"
+            members = info.get("members") or []
+            # сортировка по позиции и затем по ID
+            members = sorted(members, key=lambda m: (m.get("base_pos", 0), m.get("user_id", 0)))
+
+            if members:
+                for m in members:
+                    uid = m.get("user_id") or "—"
+                    first = (m.get("first_name") or "").strip()
+                    last  = (m.get("last_name") or "").strip()
+                    full_name = (first + " " + last).strip() or ""
+                    username = f"@{m['username']}" if m.get("username") else ""
+                    full_name = html.escape(full_name)
+                    # 🔹 uid — Имя @username
+                    lines.append(f"🔹 <code>{uid}</code> — {full_name} {username}".rstrip())
+            else:
+                lines.append("")
+
+            lines.append("")  # пустая строка после группы
+
+        # короткая шпаргалка внизу
         lines.append(HELP_GROUPS_SHORT)
 
         await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
     except Exception as e:
-        # чтобы не молчать в случае ошибки
+        logging.exception("admin_time_groups_list: %s", e)
         await update.message.reply_text("⚠️ Не удалось получить список групп.")
         raise
+
 @require_admin
 async def admin_time_profile_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать все профили времени"""
@@ -312,10 +374,11 @@ async def admin_time_profile_list(update: Update, context: ContextTypes.DEFAULT_
     if not profiles:
         await update.message.reply_text("❌ Профили времени не найдены")
         return
-    lines = ["📋 <b>Профили времени:</b>\n"]
+    lines = ["⌚ <b>Профили времени:</b>\n"]
     for p in profiles:
         tz = p["tz_name"] or f"MSK{int(p['tz_offset_hours']):+d}h"
-        lines.append(f"• <b>{p['name']}</b> (<code>{p['key']}</code>) — TZ: {tz}")
+        lines.append(f"🕰️ <b>{p['name']}</b> (<code>{p['key']}</code>)")
+        lines.append(f"       TZ: {tz}")
     lines.append("")
     lines.append(HELP_TIME_PROFILES_SHORT)
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)

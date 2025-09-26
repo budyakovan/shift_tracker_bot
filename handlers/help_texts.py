@@ -85,7 +85,7 @@ HELP_MAIN_SHORT = """
 """.strip()
 HELP_USERS_SHORT = """
 <b>Доступные команды:</b>
-➡️ /help_users — справка пользователи
+➡️ /help_users — полная справка
 ➡️ /admin_pending — ожидающие авторизации
 ➡️ /admin_time_groups_list — список тайм-групп
 ️️➡️ /admin_time_profile_list — список профилей времени
@@ -104,27 +104,71 @@ HELP_USERS_FULL = """
 """.strip()
 HELP_GROUPS_FULL = """
 👷 <b>Тайм-группы (админ)</b>
-• /admin_time_groups_list — список групп
-• <code>/admin_time_groups_show</code> <i>group_key</i> — подробности по группе
-• <code>/admin_time_groups_create</code> <i>group_key</i> <i>profile_key</i> <i>YYYY-MM-DD</i> <i>period</i> — создать/обновить
-• <code>/admin_time_groups_add_user</code> <i>group_key</i> <i>user_id</i> <i>pos</i> — добавить пользователя
-• <code>/admin_time_groups_remove_user</code> <i>group_key</i> <i>user_id</i> — удалить пользователя
-• <code>/admin_time_groups_set_pos</code> <i>group_key</i> <i>user_id</i> <i>pos</i> — изменить позицию
-• <code>/admin_time_groups_set_period</code> <i>group_key</i> <i>days</i> — период ротации
-• <code>/admin_time_groups_set_tz</code> <i>group_key</i> <i>IANA_TZ</i> — часовой пояс
-• <code>/admin_time_groups_delete</code> <i>group_key</i> — удалить группу
+
+<b>Что это:</b>
+Тайм-группа — это ротационная группа пользователей с общей «эпохой» (стартовой датой), 
+периодом ротации (в днях) и часовым поясом. 
+Используется для автоматического определения текущей/следующей смены по позиции участника.
+
+<b>Доступ:</b> команды ниже доступны только администраторам (нужен декоратор <code>@require_admin</code>).
+
+───────────────────────
+
+<b>Базовые команды</b>
+• <code>/admin_time_groups_list</code> — список групп (кратко).
+• <code>/admin_time_groups_show</code> <i>group_key</i> — подробности по группе.
+
+<b>Создание и настройки</b>
+• <code>/admin_time_groups_create</code> <i>group_key profile_key YYYY-MM-DD period</i> — создать/обновить группу.
+   ├ <b>group_key</b> — ключ (например, <code>group_budyakov</code>)  
+   ├ <b>profile_key</b> — связанный профиль (например, <code>team_budyakov</code>)  
+   ├ <b>YYYY-MM-DD</b> — дата эпохи (например, <code>2025-09-05</code>)  
+   └ <b>period</b> — период ротации в днях (например, <code>8</code>)  
+
+• <code>/admin_time_groups_set_period</code> <i>group_key days</i> — сменить период.  
+• <code>/admin_time_groups_set_tz</code> <i>group_key IANA_TZ</i> — сменить часовой пояс (например, <code>Europe/Moscow</code>).
+
+<b>Участники</b>
+• <code>/admin_time_groups_add_user</code> <i>group_key user_id pos</i> — добавить пользователя.  
+• <code>/admin_time_groups_remove_user</code> <i>group_key user_id</i> — удалить пользователя.  
+• <code>/admin_time_groups_set_pos</code> <i>group_key user_id pos</i> — изменить позицию.  
+
+<b>Удаление</b>
+• <code>/admin_time_groups_delete</code> <i>group_key</i> — удалить группу.
+
+───────────────────────
+
+<b>Аргументы</b>
+• <b>user_id</b> — числовой ID (Telegram или внутренний).  
+• <b>pos</b> — позиция в группе (0 — первый слот).  
+• <b>YYYY-MM-DD</b> — дата в ISO-формате.  
+• <b>IANA_TZ</b> — валидный TZ (например, <code>Europe/Berlin</code>, <code>UTC</code>).  
+• <b>period/days</b> — целое число дней (по умолчанию 8).  
+
+<b>Эпоха:</b> базовая дата, от которой считается ротация.  
+<b>TZ:</b> влияет на вычисление текущей даты при сменах.
+
+───────────────────────
+
+<b>Пример:</b>
+<code>/admin_time_groups_create group_budyakov team_budyakov 2025-09-05 8</code>  
+<code>/admin_time_groups_add_user group_budyakov 123456789 0</code>  
+<code>/admin_time_groups_set_tz group_budyakov Europe/Moscow</code>  
 """.strip()
 HELP_GROUPS_SHORT = """
-👷 <b>Тайм-группы (коротко)</b>
-• /admin_time_groups_list - список тайм-групп
-• <code>/admin_time_groups_show</code> <i>group_key</i>
-• <code>/admin_time_groups_create</code> <i>group_key</i> <i>profile_key</i> <i>YYYY-MM-DD</i> <i>period</i>
-• <code>/admin_time_groups_add_user</code> <i>group_key</i> <i>user_id</i> <i>pos</i>
-• <code>/admin_time_groups_remove_user</code> <i>group_key</i> <i>user_id</i>
-• <code>/admin_time_groups_set_pos</code> <i>group_key</i> <i>user_id</i> <i>pos</i>
-• <code>/admin_time_groups_set_period</code> <i>group_key</i> <i>days</i>
-• <code>/admin_time_groups_set_tz</code> <i>group_key</i> <i>IANA_TZ</i>
-• <code>/admin_time_groups_delete</code> <i>group_key</i>
+<b>Доступные команды:</b>
+➡️ /help_groups — полная справка
+➡️ /admin_time_groups_list — список тайм-групп
+➡️ /admin_users — все пользователи
+️️➡️ /admin_time_profile_list — список профилей времени
+➤ <code>/admin_time_groups_show</code> <i>group_key</i>
+➤ <code>/admin_time_groups_add_user</code> <i>group_key</i> <i>user_id</i> <i>pos</i>
+➤ <code>/admin_time_groups_remove_user</code> <i>group_key</i> <i>user_id</i>
+➤ <code>/admin_time_groups_set_pos</code> <i>group_key</i> <i>user_id</i> <i>pos</i>
+➤ <code>/admin_time_groups_set_period</code> <i>group_key</i> <i>days</i>
+➤ <code>/admin_time_groups_set_tz</code> <i>group_key</i> <i>IANA_TZ</i>
+➤ <code>/admin_time_groups_delete</code> <i>group_key</i>
+➤ <code>/admin_time_groups_create</code> <i>group_key</i> <i>profile_key</i> <i>YYYY-MM-DD</i> <i>period</i> <i>name</i>
 """.strip()
 HELP_TIME_PROFILES_FULL = """
 <b>Доступные команды:</b>
@@ -137,13 +181,16 @@ HELP_TIME_PROFILES_FULL = """
 • <code>/admin_time_profile_delete</code> <i>key</i> — удалить профиль
 """.strip()
 HELP_TIME_PROFILES_SHORT = """
-⏱ <b>Тайм-профили (коротко)</b>
-• /admin_time_profile_list
-• <code>/admin_time_profile_create</code> <i>key</i> <i>description</i>
-• <code>/admin_time_profile_add_slot</code> <i>key</i> <i>start</i> <i>end</i>
-• <code>/admin_time_profile_clear_slots</code> <i>key</i>
-• <code>/admin_time_profile_show</code> <i>key</i>
-• <code>/admin_time_profile_delete</code> <i>key</i>
+<b>Доступные команды:</b>
+️➡️ /help_time_profiles — полная справка
+️️➡️ /admin_time_profile_list — список профилей времени
+➡️ /admin_time_groups_list — список тайм-групп
+➡️ /admin_users — все пользователи
+➤ <code>/admin_time_profile_show</code> <i>key</i>
+➤ <code>/admin_time_profile_create</code> <i>key</i> <i>description</i>
+➤ <code>/admin_time_profile_add_slot</code> <i>key</i> <i>start</i> <i>end</i>
+➤ <code>/admin_time_profile_clear_slots</code> <i>key</i>
+➤ <code>/admin_time_profile_delete</code> <i>key</i>
 """.strip()
 HELP_VACATIONS_FULL = """
 🏖 <b>Отпуска</b>
