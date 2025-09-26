@@ -20,11 +20,12 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from utils.decorators import require_admin
+from database.repository import UserRepository
 from handlers.help_texts import HELP_USERS_SHORT
 logger = logging.getLogger(__name__)
 
 def _load_admin_users_footer() -> str:
-    """Короткая шпаргалка для вывода в конце /admin_users."""
+    # Берём короткую шпаргалку из help_texts, без файлов на диске
     return HELP_USERS_SHORT
 
 # --- В _norm_user ДОБАВЬ поле 'status' в возвращаемый словарь
@@ -267,30 +268,39 @@ def _set_group_repo(user_id: int, group_key: str) -> Optional[bool]:
 
 @require_admin
 async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Компактный список: ожидающие / зарегистрированные + «хвост» с командами из файла."""
-    pending = _get_pending_users()
-    approved = [u for u in _get_all_users() if u.get("is_approved")]
+    """Список пользователей: сначала ожидающие, затем одобренные. ID в <code>…</code>."""
+    repo = UserRepository()
+    all_users = repo.get_all_users()
+    pending = [u for u in all_users if not u.get("is_approved")]
+    approved = [u for u in all_users if u.get("is_approved")]
 
-    # сортировка: админы вперёд, затем по имени/юзернейму/ID
-    def sort_key(x: dict[str, Any]):
-        disp = (x.get("name") or x.get("username") or str(x.get("uid"))).lower()
-        return (not x.get("is_admin", False), disp)
+    def display_name(u: dict) -> str:
+        fn = (u.get("first_name") or "").strip()
+        ln = (u.get("last_name") or "").strip()
+        full = f"{fn} {ln}".strip()
+        return full or (u.get("username") or "").lstrip("@") or str(u.get("user_id"))
+
+    # админы вперёд, затем по человекочитаемому имени
+    def sort_key(u: dict):
+        is_admin = str(u.get("role", "")).lower() == "admin"
+        return (not is_admin, display_name(u).lower())
 
     approved.sort(key=sort_key)
 
     lines: list[str] = []
-
     if pending:
         lines.append("⏳ Пользователи, ожидающие авторизации:")
         for u in pending:
-            base = _format_user_line(u, with_icon=False)
-            lines.append(f"❔ {base}")
+            tail = f" @{escape(u['username'])}" if u.get("username") else ""
+            lines.append(f"❔ <code>{u['user_id']}</code> — {escape(display_name(u))}{tail}")
         lines.append("")
 
     lines.append("👥 Зарегистрированные пользователи:")
     if approved:
         for u in approved:
-            lines.append(_format_user_line(u, with_icon=True))
+            icon = "👑" if str(u.get("role", "")).lower() == "admin" else "👤"
+            tail = f" @{escape(u['username'])}" if u.get("username") else ""
+            lines.append(f"{icon} <code>{u['user_id']}</code> — {escape(display_name(u))}{tail}")
     else:
         lines.append("— пока никого нет")
 
@@ -302,145 +312,100 @@ async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
-# --- НЕ обязательно, но красиво: сделай admin_pending единообразным (HTML + <code>):
 @require_admin
 async def admin_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Список ожидающих одобрения (подробно)."""
-    pend = _get_pending_users()
+    repo = UserRepository()
+    pend = repo.get_pending_users()
     if not pend:
         await update.message.reply_text("✅ Нет ожидающих пользователей.")
         return
 
+    def display_name(u: dict) -> str:
+        fn = (u.get("first_name") or "").strip()
+        ln = (u.get("last_name") or "").strip()
+        full = f"{fn} {ln}".strip()
+        return full or (u.get("username") or "").lstrip("@") or str(u.get("user_id"))
+
     lines = ["⌛️ <b>Ожидающие:</b>"]
     for u in pend:
-        lines.append(_format_user_line(u, with_icon=False))
+        tail = f" @{escape(u['username'])}" if u.get("username") else ""
+        lines.append(f"{escape(display_name(u))} <code>{u['user_id']}</code>{tail}")
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
 
 @require_admin
 async def admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Одобрить пользователя: /admin_approve <user_id> [group_key]."""
+    """Одобрить: /admin_approve <user_id> [group_key]."""
     if not context.args:
         await update.message.reply_text(
             "❌ Использование: <code>/admin_approve</code> <i>user_id</i> [<i>group_key</i>]",
             parse_mode="HTML",
         )
         return
-
     try:
         user_id = int(context.args[0])
     except Exception:
         await update.message.reply_text("❌ user_id должен быть числом")
         return
 
-    group_key = context.args[1].strip() if len(context.args) > 1 else None
-    admin_id = update.effective_user.id if update and update.effective_user else None
+    admin_id = update.effective_user.id if update.effective_user else None
+    repo = UserRepository()
+    ok = repo.approve_user(user_id, admin_id or user_id)
 
-    # 1) Одобряем пользователя, передавая admin_id (BIGINT), если нужно
-    ok = _approve_user_repo(user_id, admin_id=admin_id)
-    if not ok:
+    msg_parts = []
+    if ok:
+        msg_parts.append(f"✅ Пользователь <code>{user_id}</code> одобрен")
+    else:
         await update.message.reply_text(
             f"❌ Не удалось одобрить пользователя <code>{user_id}</code>",
             parse_mode="HTML",
         )
         return
 
-    # 2) Пытаемся подчистить pending
-    _remove_from_pending_repo(user_id)
+    # опционально назначить группу, если передали второй аргумент
+    if len(context.args) > 1:
+        group_key = (context.args[1] or "").strip()
+        if group_key:
+            try:
+                from database import group_repository as group_repo
+                set_fn = getattr(group_repo, "set_user_group", None) or getattr(group_repo, "assign_user_to_group", None)
+                g_ok = bool(set_fn(user_id, group_key)) if callable(set_fn) else False
+                if g_ok:
+                    msg_parts.append(f"(группа <code>{escape(group_key)}</code> назначена)")
+                else:
+                    msg_parts.append(f"(⚠️ группа <code>{escape(group_key)}</code> не назначена)")
+            except Exception:
+                msg_parts.append("(⚠️ нет функции назначения группы)")
 
-    # 3) Назначаем группу, если попросили
-    extra = ""
-    if group_key:
-        g_ok = _set_group_repo(user_id, group_key)
-        if g_ok:
-            extra = f" (группа <code>{escape(group_key)}</code> назначена)"
-        elif g_ok is None:
-            extra = " (⚠️ нет функции назначения группы)"
-        else:
-            extra = f" (⚠️ не удалось назначить группу <code>{escape(group_key)}</code>)"
+    await update.message.reply_text(" ".join(msg_parts), parse_mode="HTML")
 
-    # 4) Контрольный пересчёт pending по факту is_approved
-    still_pending = any(u.get("uid") == user_id for u in _get_pending_users())
-    tail = " ⚠️ однако пользователь всё ещё числится в списке ожидания — проверьте логи/БД." if still_pending else ""
-
-    await update.message.reply_text(
-        f"✅ Пользователь <code>{user_id}</code> одобрен{extra}{tail}",
-        parse_mode="HTML",
-    )
 
 @require_admin
 async def admin_removeuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Удалить пользователя: /admin_removeuser <user_id>."""
+    """Удалить: /admin_removeuser <user_id> (работает через UserRepository)."""
     if not context.args:
         await update.message.reply_text(
             "❌ Использование: <code>/admin_removeuser</code> <i>user_id</i>",
-            parse_mode="HTML"
+            parse_mode="HTML",
         )
         return
-
     try:
         user_id = int(context.args[0])
     except Exception:
         await update.message.reply_text("❌ user_id должен быть числом")
         return
 
-    ok = False
-    err_text = None
-
-    # 1) Сначала пробуем database.repository.remove_user(...)
-    repo_mod = None
-    try:
-        from database import repository as repo_mod
-    except Exception:
-        repo_mod = None
-
-    if repo_mod and hasattr(repo_mod, "remove_user"):
-        try:
-            try:
-                ok = bool(repo_mod.remove_user(user_id))
-            except TypeError:
-                # вариант с соединением первым параметром
-                try:
-                    from database.connection import get_connection
-                    conn = get_connection()
-                except Exception:
-                    conn = None
-                ok = bool(repo_mod.remove_user(conn, user_id))
-        except Exception as e:
-            err_text = str(e)
-
-    # 2) Fallback — database.user_repository.*
-    if not ok:
-        try:
-            from database import user_repository as ur
-            rm = _try_repo_funcs(ur, ("remove_user", "delete_user", "admin_removeuser"))
-            if rm:
-                try:
-                    ok = bool(rm(user_id))
-                except TypeError:
-                    ok = bool(rm(None, user_id))
-        except Exception as e:
-            err_text = str(e)
+    repo = UserRepository()
+    ok = repo.remove_user(user_id)
 
     if ok:
-        await update.message.reply_text(
-            f"🗑 Пользователь <code>{user_id}</code> удалён",
-            parse_mode="HTML"
-        )
+        await update.message.reply_text(f"🗑 Пользователь <code>{user_id}</code> удалён", parse_mode="HTML")
     else:
-        hint = ""
-        if (err_text and "violates foreign key constraint" in err_text):
-            hint = (
-                "\n⚠️ Похоже, мешают записи в <code>admin_actions</code>. "
-                "Ниже — одноразовый SQL-фикс FK/каскадов."
-            )
-        await update.message.reply_text(
-            f"❌ Не удалось удалить пользователя <code>{user_id}</code>.{hint}",
-            parse_mode="HTML"
-        )
+        await update.message.reply_text(f"❌ Не удалось удалить пользователя <code>{user_id}</code>.", parse_mode="HTML")
 
 # Алиас под импорт в main.py
 remove_user = admin_removeuser
-
 
 @require_admin
 async def admin_set_group(update: Update, context: ContextTypes.DEFAULT_TYPE):

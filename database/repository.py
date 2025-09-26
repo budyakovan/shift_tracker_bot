@@ -68,29 +68,32 @@ class UserRepository:
             logger.error(f"Error creating user: {e}")
             return False
 
-    def remove_user(user_id: int) -> bool:
+    def remove_user(self, user_id: int) -> bool:
         """
-        Удаляет пользователя, предварительно обнуляя ссылки в admin_actions.
-        Возвращает True при успехе.
+        Удаляет пользователя «чисто»:
+        - зануляет admin_id в admin_actions, где этот пользователь выступал админом,
+        - удаляет записи admin_actions, где он был целевым пользователем (на случай отсутствия CASCADE),
+        - удаляет его из user_settings и users.
         """
-        conn = get_conn()  # твой способ получить соединение
+        conn = db_connection.get_connection()
         try:
             with conn:
                 with conn.cursor() as cur:
-                    # 1) сняли ссылки из журнала действий админов
-                    cur.execute(
-                        "UPDATE admin_actions SET admin_id = NULL WHERE admin_id = %s",
-                        (user_id,)
-                    )
-                    # 2) если есть другие таблицы с FK на user_settings(user_id) без CASCADE — обработай их здесь
-
-                    # 3) собственно удаление (порядок важен — что на что ссылается)
-                    # если у тебя есть таблица users и отдельная user_settings — смотри на реальные FK.
-                    cur.execute("DELETE FROM user_settings WHERE user_id = %s", (user_id,))
-                    # cur.execute("DELETE FROM users WHERE id = %s", (user_id,))  # если нужно и если FK позволяют
+                    # 1) если пользователь когда-то был админом действия — зануляем ссылку
+                    cur.execute("UPDATE admin_actions SET admin_id = NULL WHERE admin_id = %s;", (user_id,))
+                    # 2) удаляем действия, направленные на этого пользователя (подстраховка, если нет CASCADE)
+                    cur.execute("DELETE FROM admin_actions WHERE target_user_id = %s;", (user_id,))
+                    # 3) основной профиль
+                    cur.execute("DELETE FROM user_settings WHERE user_id = %s;", (user_id,))
+                    # 4) карточка пользователя
+                    cur.execute("DELETE FROM users WHERE user_id = %s;", (user_id,))
             return True
         except Exception as e:
-            logger.error("Error removing user: %s", e)
+            logger.error(f"Error removing user: {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             return False
 
     def approve_user(self, user_id: int, admin_id: int) -> bool:
