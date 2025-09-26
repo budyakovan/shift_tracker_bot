@@ -1,0 +1,327 @@
+# -*- coding: utf-8 -*-
+"""
+Все тексты справок (HTML).
+Правила форматирования:
+- Команды без аргументов — plain (/today).
+- Команды с аргументами — <code>/cmd</code> <i>arg</i> ...
+- Заголовки — <b>...</b>
+"""
+
+# ====== MAIN (/help_full) ======
+HELP_MAIN_FULL = """
+❓ <b>Полная справка</b>
+
+👋 Повседневное:
+• /today — смены на сегодня
+• /tomorrow — смены на завтра
+• <code>/ondate</code> <i>DD.MM[.YYYY]</i> — кто дежурит в указанную дату
+
+👥 Пользователи:
+• /admin_pending — список ожидающих
+• <code>/admin_approve</code> <i>user_id</i> [<i>group_key</i>] — одобрить
+• /admin_users — все пользователи
+• <code>/admin_removeuser</code> <i>user_id</i> — удалить
+• <code>/admin_set_group</code> <i>user_id</i> <i>group_key</i> — назначить группу
+• <code>/admin_unset_group</code> <i>user_id</i> — снять группу
+• <code>/admin_list_group</code> <i>group_key</i> — пользователи в группе
+• /admin_update_all_users — обновить профили (username/имена)
+
+👷 Группы (тайм-группы):
+• /admin_time_groups_list — список групп
+• <code>/admin_time_groups_show</code> <i>group_key</i> — подробности по группе
+• <code>/admin_time_groups_create</code> <i>group_key</i> <i>profile_key</i> <i>YYYY-MM-DD</i> <i>period</i> — создать/обновить
+• <code>/admin_time_groups_add_user</code> <i>group_key</i> <i>user_id</i> <i>pos</i> — добавить пользователя
+• <code>/admin_time_groups_remove_user</code> <i>group_key</i> <i>user_id</i> — удалить пользователя
+• <code>/admin_time_groups_set_pos</code> <i>group_key</i> <i>user_id</i> <i>pos</i> — изменить позицию
+• <code>/admin_time_groups_set_period</code> <i>group_key</i> <i>days</i> — период ротации
+• <code>/admin_time_groups_set_tz</code> <i>group_key</i> <i>IANA_TZ</i> — часовой пояс
+• <code>/admin_time_groups_delete</code> <i>group_key</i> — удалить группу
+
+⏱ Тайм-профили:
+• /admin_time_profile_list — список профилей
+• <code>/admin_time_profile_create</code> <i>key</i> <i>description</i> — создать профиль
+• <code>/admin_time_profile_add_slot</code> <i>key</i> <i>start</i> <i>end</i> — добавить слот (например 09:00 18:00)
+• <code>/admin_time_profile_clear_slots</code> <i>key</i> — очистить слоты
+• <code>/admin_time_profile_show</code> <i>key</i> — показать детали
+• <code>/admin_time_profile_delete</code> <i>key</i> — удалить профиль
+
+🏖 Отпуска:
+• /vacation_add — добавить отпуск (бот спросит даты)
+• /vacation_list — мои отпуска
+• /vacation_edit — изменить отпуск
+• /vacation_del — удалить отпуск
+• /admin_vacation_add — добавить отпуск пользователю (админ)
+• /admin_vacation_edit — изменить отпуск пользователя (админ)
+• /admin_vacation_del — удалить отпуск пользователя (админ)
+
+🤒 Больничные:
+• /sick_add — добавить больничный (бот спросит даты)
+• /sick_list — мои больничные
+• /sick_edit — изменить больничный
+• /sick_del — удалить больничный
+• /admin_sick_add — добавить больничный пользователю (админ)
+• /admin_sick_edit — изменить больничный пользователя (админ)
+• /admin_sick_del — удалить больничный пользователя (админ)
+""".strip()
+
+# ====== MAIN (/help) краткое ======
+HELP_MAIN_SHORT = """
+❓ <b>Справка — основные команды</b>
+
+👋 <b>Повседневное</b>
+• /today — смены на сегодня
+• /tomorrow — смены на завтра
+• <code>/ondate</code> <i>DD.MM[.YYYY]</i> — кто дежурит в указанную дату
+
+📚 <b>Разделы подробной справки</b>:
+• /help_users — пользователи (админ)
+• /help_groups — группы (админ)
+• /help_time_profiles — тайм-профили (админ)
+• /help_vacations — отпуска
+• /help_sick — больничные
+• /help_duties — обязанности          
+• /help_admin_all — все админ-команды одним списком
+""".strip()
+
+# ====== USERS (админ) ======
+HELP_USERS_SHORT = """
+👥 <b>Пользователи (коротко)</b>
+• /help - справка
+• /help_users — пользователи (админ)
+• /admin_users - список пользователей
+• /admin_pending
+• <code>/admin_approve</code> <i>user_id</i> [<i>group_key</i>]
+• /admin_users
+• <code>/admin_removeuser</code> <i>user_id</i>
+• <code>/admin_set_group</code> <i>user_id</i> <i>group_key</i>
+• <code>/admin_unset_group</code> <i>user_id</i>
+• <code>/admin_list_group</code> <i>group_key</i>
+""".strip()
+
+HELP_USERS_FULL = """
+👥 <b>Работа с пользователями</b>
+
+📌 <b>Одобрение / модерация</b>
+• /admin_users — все пользователи (с группами)
+• /admin_pending — список ожидающих одобрения
+• <code>/admin_approve</code> <i>user_id</i> [<i>group_key</i>] — одобрить (можно сразу назначить группу)
+• <code>/admin_removeuser</code> <i>user_id</i> — удалить пользователя
+
+👷 <b>Назначение групп</b>
+• <code>/admin_set_group</code> <i>user_id</i> <i>group_key</i> — назначить группу
+• <code>/admin_unset_group</code> <i>user_id</i> — снять группу
+• <code>/admin_list_group</code> <i>group_key</i> — пользователи в группе
+
+🔄 <b>Служебное</b>
+• /admin_update_all_users — обновить профили (username/имена)
+
+💡 <b>Примеры</b>
+• <code>/admin_approve</code> <i>12345678</i> <i>g2</i>
+• <code>/admin_set_group</code> <i>12345678</i> <i>g3</i>
+• <code>/admin_unset_group</code> <i>12345678</i>
+""".strip()
+
+# ====== GROUPS (тайм-группы) ======
+HELP_GROUPS_FULL = """
+👷 <b>Тайм-группы (админ)</b>
+• /admin_time_groups_list — список групп
+• <code>/admin_time_groups_show</code> <i>group_key</i> — подробности по группе
+• <code>/admin_time_groups_create</code> <i>group_key</i> <i>profile_key</i> <i>YYYY-MM-DD</i> <i>period</i> — создать/обновить
+• <code>/admin_time_groups_add_user</code> <i>group_key</i> <i>user_id</i> <i>pos</i> — добавить пользователя
+• <code>/admin_time_groups_remove_user</code> <i>group_key</i> <i>user_id</i> — удалить пользователя
+• <code>/admin_time_groups_set_pos</code> <i>group_key</i> <i>user_id</i> <i>pos</i> — изменить позицию
+• <code>/admin_time_groups_set_period</code> <i>group_key</i> <i>days</i> — период ротации
+• <code>/admin_time_groups_set_tz</code> <i>group_key</i> <i>IANA_TZ</i> — часовой пояс
+• <code>/admin_time_groups_delete</code> <i>group_key</i> — удалить группу
+""".strip()
+
+HELP_GROUPS_SHORT = """
+👷 <b>Тайм-группы (коротко)</b>
+• /admin_time_groups_list
+• <code>/admin_time_groups_show</code> <i>group_key</i>
+• <code>/admin_time_groups_create</code> <i>group_key</i> <i>profile_key</i> <i>YYYY-MM-DD</i> <i>period</i>
+• <code>/admin_time_groups_add_user</code> <i>group_key</i> <i>user_id</i> <i>pos</i>
+• <code>/admin_time_groups_remove_user</code> <i>group_key</i> <i>user_id</i>
+• <code>/admin_time_groups_set_pos</code> <i>group_key</i> <i>user_id</i> <i>pos</i>
+• <code>/admin_time_groups_set_period</code> <i>group_key</i> <i>days</i>
+• <code>/admin_time_groups_set_tz</code> <i>group_key</i> <i>IANA_TZ</i>
+• <code>/admin_time_groups_delete</code> <i>group_key</i>
+""".strip()
+
+# ====== TIME PROFILES ======
+HELP_TIME_PROFILES_FULL = """
+⏱ <b>Тайм-профили (админ)</b>
+• /admin_time_profile_list — список профилей
+• <code>/admin_time_profile_create</code> <i>key</i> <i>description</i> — создать профиль
+• <code>/admin_time_profile_add_slot</code> <i>key</i> <i>start</i> <i>end</i> — добавить слот (например 09:00 18:00)
+• <code>/admin_time_profile_clear_slots</code> <i>key</i> — очистить слоты
+• <code>/admin_time_profile_show</code> <i>key</i> — показать детали
+• <code>/admin_time_profile_delete</code> <i>key</i> — удалить профиль
+""".strip()
+
+HELP_TIME_PROFILES_SHORT = """
+⏱ <b>Тайм-профили (коротко)</b>
+• /admin_time_profile_list
+• <code>/admin_time_profile_create</code> <i>key</i> <i>description</i>
+• <code>/admin_time_profile_add_slot</code> <i>key</i> <i>start</i> <i>end</i>
+• <code>/admin_time_profile_clear_slots</code> <i>key</i>
+• <code>/admin_time_profile_show</code> <i>key</i>
+• <code>/admin_time_profile_delete</code> <i>key</i>
+""".strip()
+
+# ====== VACATIONS ======
+HELP_VACATIONS_FULL = """
+🏖 <b>Отпуска</b>
+ • /vacation_add — добавить отпуск (бот спросит даты)
+ • /vacation_list — мои отпуска
+ • <code>/vacation_edit</code> <i>&lt;id&gt; YYYY-MM-DD YYYY-MM-DD [комментарий]</i> — изменить отпуск
+ • <code>/vacation_del</code> <i>&lt;id&gt;</i> — удалить отпуск
+   Период: YYYY-MM | YYYY-MM-DD..YYYY-MM-DD | today/tomorrow | пусто = текущий месяц
+
+ <b>Админ:</b>
+ • <code>/vacations_all</code> [<i>период</i>] — список всех отпусков
+ • <code>/admin_vacation_add</code> <i>&lt;user_id&gt; YYYY-MM-DD YYYY-MM-DD [комментарий]</i> — добавить отпуск пользователю
+ • <code>/admin_vacation_edit</code> <i>&lt;id&gt; YYYY-MM-DD YYYY-MM-DD [комментарий]</i> — изменить отпуск пользователя
+ • <code>/admin_vacation_del</code> <i>&lt;id&gt;</i> — удалить отпуск пользователя
+""".strip()
+
+HELP_VACATIONS_SHORT = """
+🏖 <b>Отпуска (коротко)</b>
+ • /vacation_add
+ • /vacation_list
+ • <code>/vacation_edit</code> <i>&lt;id&gt; YYYY-MM-DD YYYY-MM-DD [комментарий]</i>
+ • <code>/vacation_del</code> <i>&lt;id&gt;</i>
+ • <code>/vacations_all</code> [<i>период</i>] (админ)
+ • <code>/admin_vacation_add</code> <i>&lt;user_id&gt; YYYY-MM-DD YYYY-MM-DD [комментарий]</i>
+ • <code>/admin_vacation_edit</code> <i>&lt;id&gt; YYYY-MM-DD YYYY-MM-DD [комментарий]</i>
+ • <code>/admin_vacation_del</code> <i>&lt;id&gt;</i>
+""".strip()
+
+# ====== SICK ======
+HELP_SICK_FULL = """
+🤒 <b>Больничные</b>
+• <code>/sick_all</code> [<i>период</i>] (админ)
+• /sick_add — добавить больничный (бот спросит даты)
+• /sick_list — мои больничные
+• <code>/sick_edit</code> <i>&lt;id&gt; YYYY-MM-DD YYYY-MM-DD [комментарий]</i> — изменить больничный
+• <code>/sick_del</code> <i>&lt;id&gt;</i> — удалить больничный
+
+<b>Админ:</b>
+• <code>/sick_all</code> [<i>период</i>] (админ)
+• <code>/admin_sick_add</code> <i>&lt;user_id&gt; YYYY-MM-DD YYYY-MM-DD [комментарий]</i>
+• <code>/admin_sick_edit</code> <i>&lt;id&gt; YYYY-MM-DD YYYY-MM-DD [комментарий]</i>
+• <code>/admin_sick_del</code> <i>&lt;id&gt;</i>
+""".strip()
+
+HELP_SICK_SHORT = """
+🤒 <b>Больничные (коротко)</b>
+• /sick_add
+• /sick_list
+• <code>/sick_edit</code> <i>&lt;id&gt; YYYY-MM-DD YYYY-MM-DD [комментарий]</i>
+• <code>/sick_del</code> <i>&lt;id&gt;</i>
+• <code>/admin_sick_add</code> <i>&lt;user_id&gt; YYYY-MM-DD YYYY-MM-DD [комментарий]</i>
+• <code>/admin_sick_edit</code> <i>&lt;id&gt; YYYY-MM-DD YYYY-MM-DD [комментарий]</i>
+• <code>/admin_sick_del</code> <i>&lt;id&gt;</i>
+""".strip()
+
+# ====== ADMIN ALL ======
+HELP_ADMIN_ALL_FULL = """
+🛡 <b>Все админ-команды</b>
+
+👥 <b>Пользователи</b>:
+• /admin_pending
+• <code>/admin_approve</code> <i>user_id</i> [<i>group_key</i>]
+• /admin_users
+• <code>/admin_removeuser</code> <i>user_id</i>
+• /admin_update_all_users
+• <code>/admin_set_group</code> <i>user_id</i> <i>group_key</i>
+• <code>/admin_unset_group</code> <i>user_id</i>
+• <code>/admin_list_group</code> <i>group_key</i>
+
+👷 <b>Группы</b>:
+• /admin_time_groups_list
+• <code>/admin_time_groups_show</code> <i>group_key</i>
+• <code>/admin_time_groups_create</code> <i>group_key</i> <i>profile_key</i> <i>YYYY-MM-DD</i> <i>period</i>
+• <code>/admin_time_groups_add_user</code> <i>group_key</i> <i>user_id</i> <i>pos</i>
+• <code>/admin_time_groups_remove_user</code> <i>group_key</i> <i>user_id</i>
+• <code>/admin_time_groups_set_pos</code> <i>group_key</i> <i>user_id</i> <i>pos</i>
+• <code>/admin_time_groups_set_period</code> <i>group_key</i> <i>days</i>
+• <code>/admin_time_groups_set_tz</code> <i>group_key</i> <i>IANA_TZ</i>
+• <code>/admin_time_groups_delete</code> <i>group_key</i>
+
+⏱ <b>Тайм-профили</b>:
+• /admin_time_profile_list
+• <code>/admin_time_profile_create</code> <i>key</i> <i>description</i>
+• <code>/admin_time_profile_add_slot</code> <i>key</i> <i>start</i> <i>end</i>
+• <code>/admin_time_profile_clear_slots</code> <i>key</i>
+• <code>/admin_time_profile_show</code> <i>key</i>
+• <code>/admin_time_profile_delete</code> <i>key</i>
+
+🏖 <b>Отпуска</b>:
+• /vacation_add, /vacation_list, /vacation_edit, /vacation_del
+• /admin_vacation_add, /admin_vacation_edit, /admin_vacation_del
+
+🤒 <b>Больничные</b>:
+• /sick_add, /sick_list, /sick_edit, /sick_del
+• /admin_sick_add, /admin_sick_edit, /admin_sick_del
+""".strip()
+
+
+
+# -*- coding: utf-8 -*-
+"""Help texts for the Duties module (no RACI)."""
+
+HELP_DUTIES_SHORT = '''
+🧩 <b>Обязанности (коротко)</b>
+• /duties_catalog [поиск] — список обязанностей
+• <code>/duty_show</code> <i>key</i> — карточка одной обязанности
+• /duty_import — загрузить каталог из CSV
+• /duty_export — выгрузить каталог в CSV
+• /assign_duties — авторспределение на сегодня (справедливость по истории)
+• /assign_duties_rr — авторспределение Round-Robin
+• /rank_list — ранги участников по группам
+• <code>/rank_set</code> <i>group_key</i> <i>user_id</i> <i>rank(1..3)</i>
+• <code>/duty_exclude</code> <i>user_id</i> <i>YYYY-MM-DD..YYYY-MM-DD</i> [<i>group_key</i>] [<i>reason</i>]
+• <code>/duty_exclude_del</code> <i>id</i>
+• /duty_exclude_list — активные исключения
+• /my_duties [дата] — мои назначения на сегодня/дату
+• /my_duties_next — ближайшие мои назначения
+• /my_duties — мои обязанности (можно дату: DD.MM[.YYYY] или YYYY-MM-DD)
+'''.strip()
+
+HELP_DUTIES_FULL = '''
+🧩 <b>Обязанности</b>
+
+<b>Каталог</b>
+• /duties_catalog [поиск] — показать список (вес, офисность, мин/таргет ранг)
+• <code>/duty_show</code> <i>key</i> — подробная карточка
+• /my_duties [дата] — мои назначения на сегодня/дату
+• /my_duties_next — ближайшие мои назначения
+• /my_duties — мои обязанности (можно дату: DD.MM[.YYYY] или YYYY-MM-DD)
+
+<b>Импорт/экспорт каталога</b>
+• /duty_import — загрузить CSV
+• /duty_export — выгрузить CSV
+Формат CSV: <code>key,title,weight,office_required,target_rank,min_rank,description</code>
+Примечания:
+— <code>office_required</code>: 1/0, yes/no, true/false, да/нет
+— <code>target_rank/min_rank</code>: целые числа или пусто
+
+<b>Автораспределение</b>
+• /assign_duties — справедливая выдача по истории (у кого меньше назначений, того вперед)
+• /assign_duties_rr — алгоритм Round-Robin по каждому duty
+
+<b>Ранги</b>
+• /rank_list — показать текущие ранги по группам
+• <code>/rank_set</code> <i>group_key</i> <i>user_id</i> <i>rank(1..3)</i> — 1=lead, 2=specialist, 3=junior
+
+<b>Исключения</b>
+• <code>/duty_exclude</code> <i>user_id</i> <i>YYYY-MM-DD..YYYY-MM-DD</i> [<i>group_key</i>] [<i>reason</i>]
+• <code>/duty_exclude_del</code> <i>id</i>
+• /duty_exclude_list — посмотреть активные исключения
+'''.strip()
+
+
+
+
+
