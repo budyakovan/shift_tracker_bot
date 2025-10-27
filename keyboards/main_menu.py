@@ -3,8 +3,7 @@ from telegram import ReplyKeyboardMarkup
 def get_main_keyboard():
     """Главное меню клавиатуры"""
     return ReplyKeyboardMarkup([
-        ['/next', '/my_next'],
-        ['➕ Новый график', '📋 Мои графики'],
+        ['📅 График', '🏢 Локации'],
         ['❓ Помощь']
     ], resize_keyboard=True)
 

@@ -1,3 +1,4 @@
+# /home/telegrambot/shift_tracker_bot/handlers/time_handlers.py
 import logging, re, html
 from datetime import datetime, date, timedelta
 from telegram import Update
@@ -321,12 +322,6 @@ async def admin_time_groups_list(update: Update, context: ContextTypes.DEFAULT_T
             epoch = fmt_epoch(info.get("epoch"))
             period = int(info.get("period") or info.get("rotation_period_days") or 8)
 
-            tz_name = html.escape((info.get("tz_name") or info.get("tz") or "Europe/Moscow").strip())
-            try:
-                offset = int(info.get("tz_offset_hours") or 0)
-            except Exception:
-                offset = 0
-
             # заголовок
             header = f"👥 {name} (<code>{key_html}</code>)" if raw_name.lower().startswith("группа ") \
                      else f"👥 Группа {name} (<code>{key_html}</code>)"
@@ -334,8 +329,7 @@ async def admin_time_groups_list(update: Update, context: ContextTypes.DEFAULT_T
             # блок инфо
             lines.append(header)
             lines.append(f"       Профиль: <code>{profile_key}</code>")
-            lines.append(f"       Эпоха: {epoch}  Период: {period} дн.")
-            lines.append(f"       TZ: {tz_name} ({offset}ч)")
+            lines.append(f"       Эпоха: {epoch} Период: {period} дн.")
 
             # участники из get_group_info -> "members"
             members = info.get("members") or []
@@ -353,14 +347,19 @@ async def admin_time_groups_list(update: Update, context: ContextTypes.DEFAULT_T
                     # 🔹 uid — Имя @username
                     lines.append(f"🔹 <code>{uid}</code> — {full_name} {username}".rstrip())
             else:
-                lines.append("")
+                lines.append("       (нет участников)")
 
-            lines.append("")  # пустая строка после группы
-
+        lines.append("")  # пустая строка списка групп
         # короткая шпаргалка внизу
         lines.append(HELP_GROUPS_SHORT)
 
-        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+        # Формирование текста: схлопываем повторяющиеся пустые строки
+        import re as _re
+        _text = "\n".join(lines)
+        _text = _re.sub(r"\n{3,}", "\n\n", _text)  # ≥3 пустых подряд -> одна пустая
+
+        await update.message.reply_text(_text, parse_mode=ParseMode.HTML)
+
 
     except Exception as e:
         logging.exception("admin_time_groups_list: %s", e)
@@ -500,33 +499,6 @@ async def admin_time_groups_delete(update: Update, context: ContextTypes.DEFAULT
         # маловероятно для удаления группы, но покажем человекочитаемо
         await update.message.reply_text(f"❌ Не удалось удалить группу: {e}")
 
-@require_admin
-async def admin_time_groups_set_tz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Установить IANA-таймзону для группы"""
-    if len(context.args) < 2:
-        await update.message.reply_text("❌ Использование: /admin_time_groups_set_tz <group_key> <tz_name>")
-        return
-
-    group_key = context.args[0].strip()
-    tz_name = context.args[1].strip()
-
-    try:
-        ok = time_repo.set_group_tz(group_key, tz_name)
-        if ok:
-            await update.message.reply_text(
-                f"✅ Для группы <b>{group_key}</b> установлен часовой пояс: <code>{tz_name}</code>",
-                parse_mode="HTML",
-            )
-        else:
-            await update.message.reply_text(
-                f"❌ Группа <b>{group_key}</b> не найдена.",
-                parse_mode="HTML",
-            )
-    except Exception as e:
-        await update.message.reply_text(
-            f"❌ Ошибка при установке TZ: {e}",
-            parse_mode="HTML",
-        )
 
 @require_admin
 async def admin_time_profile_show(update: Update, context: ContextTypes.DEFAULT_TYPE):

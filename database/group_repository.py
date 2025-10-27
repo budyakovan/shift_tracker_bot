@@ -1,13 +1,26 @@
+# /home/telegrambot/shift_tracker_bot/database/group_repository.py
 # -*- coding: utf-8 -*-
 """
 group_repository.py — репозиторий для работы с time-группами (группы расписаний)
 и совместимыми схемами членства.
 
-Используется:
-- /admin_time_groups_list (чтение time_groups)
-- /admin_group_rename <key> <new_name...> (обновление name в time_groups)
-- list_users_in_group(group_key) — универсально ищет участников по нескольким схемам.
-- get_user_group(user_id) — возвращает группу пользователя (key, name)
+Назначение файла:
+- Предоставляет функции для чтения/обновления записей о группах расписаний (таблица time_groups).
+- Унифицировано получает список участников группы при разных исторических схемах членства.
+- Ищет группу конкретного пользователя по нескольким возможным связям.
+- Добавляет/удаляет пользователя в/из группы (актуальная схема time_group_members).
+
+Ключевые моменты реализации:
+- Используется единое соединение с БД через синглтон db_connection (ленивое подключение).
+- SQL запросы максимально простые; наличие таблиц/колонок проверяется вспомогательными хелперами.
+- Методы безопасны к многократным вызовам (например, _ensure_name_column()).
+- Функции возвращают удобные структуры (dict / list[dict]) без привязки к конкретным ORM.
+
+Где используется:
+- /admin_time_groups_list — вывод всех групп.
+- /admin_group_rename <key> <new_name...> — обновление читабельного имени группы.
+- list_users_in_group(group_key) — получение участников (пытается несколько схем).
+- get_user_group(user_id) — возвращает ключ и имя группы пользователя.
 
 Ожидаемая схема time_groups (ориентир, адаптируйте при необходимости):
 ----------------------------------------------------------------
@@ -51,7 +64,7 @@ def _conn():
 def _ensure_name_column() -> None:
     """
     Гарантируем наличие колонки name в time_groups (PostgreSQL).
-    Безопасно вызывать многократно.
+    Безопасно вызывать многократно: ALTER TABLE ... IF NOT EXISTS.
     """
     try:
         conn = _conn()
@@ -60,10 +73,16 @@ def _ensure_name_column() -> None:
         conn.commit()
         cur.close()
     except Exception as e:
+        # не бросаем исключение наружу — логируем и продолжаем,
+        # так как отсутствие name не критично для большинства операций
         logger.error("Не удалось обеспечить наличие колонки name в %s: %s", TABLE, e)
 
 
 def _table_exists(cur, table_name: str) -> bool:
+    """
+    Проверяет наличие таблицы в схеме public через information_schema.tables.
+    Используется перед выполнением запросов к альтернативным схемам членства.
+    """
     cur.execute(
         """
         SELECT 1
@@ -83,11 +102,19 @@ def _table_exists(cur, table_name: str) -> bool:
 def list_groups() -> List[Dict[str, Any]]:
     """
     Возвращает список time-групп для админского вывода.
+    Формирует простой список словарей с ключевыми полями.
     """
-    sql = f"""
-        SELECT key, profile_key, epoch, period, tz, tz_offset_hours, name
-        FROM {TABLE}
-        ORDER BY key
+    sql = """
+        SELECT tg.key,
+               tp.key                 AS profile_key,
+               tg.epoch,
+               tg.rotation_period_days AS period,
+               tg.tz_name             AS tz,
+               tg.tz_offset_hours,
+               tg.name
+        FROM time_groups tg
+        JOIN time_profiles tp ON tp.id = tg.profile_id
+        ORDER BY tg.key
     """
     conn = _conn()
     cur = conn.cursor()
@@ -113,7 +140,7 @@ def list_groups() -> List[Dict[str, Any]]:
 
 def get_by_key(key: str) -> Optional[Dict[str, Any]]:
     """
-    Возвращает одну группу time_groups по ключу или None.
+    Возвращает одну группу из time_groups по ключу или None, если не найдена.
     """
     sql = f"""
         SELECT key, profile_key, epoch, period, tz, tz_offset_hours, name
@@ -142,12 +169,12 @@ def get_by_key(key: str) -> Optional[Dict[str, Any]]:
 def update_name(key: str, new_name: str) -> bool:
     """
     Обновляет человекочитаемое имя группы (колонка name) в time_groups.
-    Возвращает True, если строка обновлена (rowcount > 0).
+    Возвращает True, если строка действительно обновлена (rowcount > 0).
     """
     if not key or not new_name:
         return False
 
-    _ensure_name_column()
+    _ensure_name_column()  # на всякий случай, если миграции ещё не прошли
 
     sql = f"UPDATE {TABLE} SET name = %s WHERE key = %s"
     conn = _conn()
@@ -170,10 +197,10 @@ def list_users_in_group(group_key: str) -> List[Dict[str, Any]]:
 
     Поддерживаются разные варианты схемы членства — проверяются по очереди:
       1) time_group_members(user_id, group_key) + users(...)
-      2) duty_group_members(user_id, group_id) + duty_groups(id,key,...)  [если у вас такая историческая схема]
+      2) duty_group_members(user_id, group_id) + duty_groups(id,key,...)  [историческая схема]
       3) group_users(user_id, group_key) + users(...)
 
-    Функция возвращает [] если ничего не найдено.
+    При первом найденном варианте возвращает результат; если ни одна схема не найдена — [].
     """
     conn = _conn()
     cur = conn.cursor()
@@ -205,6 +232,7 @@ def list_users_in_group(group_key: str) -> List[Dict[str, Any]]:
                     for r in rows
                 ]
     except Exception:
+        # гасим ошибки конкретной ветки (например, нет таблицы users) и пробуем следующую
         pass
 
     # (2) duty_group_members + duty_groups (исторически/альтернативно)
@@ -347,10 +375,12 @@ def  get_user_group(user_id: int) -> Optional[Dict[str, Any]]:
     cur.close()
     return None
 
+
 def add_user_to_time_group(group_key: str, user_id: int, base_pos: int) -> bool:
     """
-    Добавляет/обновляет участника группы в time_group_members.
-    Требует таблицу:
+    Добавляет/обновляет участника группы в time_group_members через UPSERT.
+    Предварительно проверяет существование самой группы в {TABLE}.
+    Требуемая таблица:
       CREATE TABLE IF NOT EXISTS time_group_members (
         user_id BIGINT NOT NULL,
         group_key TEXT NOT NULL,
@@ -363,6 +393,7 @@ def add_user_to_time_group(group_key: str, user_id: int, base_pos: int) -> bool:
         # убеждаемся, что группа существует
         cur.execute(f"SELECT 1 FROM {TABLE} WHERE key=%s LIMIT 1", (group_key,))
         if cur.fetchone() is None:
+            # не вставляем участника в несуществующую группу
             return False
         # апсертом пишем участника
         cur.execute("""
@@ -373,10 +404,17 @@ def add_user_to_time_group(group_key: str, user_id: int, base_pos: int) -> bool:
         conn.commit()
         return True
 
+
 def remove_user_from_time_group(group_key: str, user_id: int) -> bool:
+    """
+    Удаляет пользователя из time_group_members.
+    Возвращает True, если запись была удалена (rowcount > 0).
+    """
     conn = _conn()
     with conn.cursor() as cur:
-        cur.execute("DELETE FROM time_group_members WHERE user_id=%s AND group_key=%s", (int(user_id), group_key))
+        cur.execute(
+            "DELETE FROM time_group_members WHERE user_id=%s AND group_key=%s",
+            (int(user_id), group_key),
+        )
         conn.commit()
         return cur.rowcount > 0
-

@@ -1,6 +1,31 @@
+# /home/telegrambot/shift_tracker_bot/handlers/admin_handlers.py
 # -*- coding: utf-8 -*-
 """
 Админ-хендлеры пользователей (компактный вывод).
+
+ЗА ЧТО ОТВЕЧАЕТ ФАЙЛ:
+— Реализует Telegram-хендлеры для админских операций с пользователями: список, «ожидающие», одобрение, назначение/снятие групп, удаление, повышение/понижение до админа, служебное обновление профилей.
+— Выводит данные в «компактном» HTML-формате: ID оборачиваются в <code>…</code> для удобного копирования, есть блок «Доступные команды».
+— Абстрагируется от конкретной реализации репозитория: аккуратно ищет функции по нескольким возможным именам и подбирает сигнатуры вызова, чтобы работать с разными кодовыми базами.
+— Минимизирует связность: многие операции выполняются через безопасные вызовы (_safe_call), а функции поиска (_try_repo_funcs) и подбора сигнатур (_try_signatures) позволяют не падать при несовпадении API репозитория.
+— Содержит fallback-логику:
+   * «ожидающие» пользователи определяются через признак is_approved=False из общего списка (не требуется отдельный pending-метод),
+   * краткая справка берётся из help_texts, без чтения файлов с диска,
+   * есть алиасы remove_user / update_all_users и заглушки legacy-групп для совместимости с импортами из main.py.
+
+ФОРМАТ ВЫВОДА:
+— В списках пользователи сортируются: админы сверху, затем по человекочитаемому имени.
+— В строках показываются иконки (👑/👤/🔸/🔹), ID в <code>, имя (или username), безопасно экранированные.
+
+БЕЗОПАСНОСТЬ И УСТОЙЧИВОСТЬ:
+— Все внешние вызовы репозиториев обёрнуты в try/except с логированием; TypeError обрабатывается отдельно, с попыткой подставить ведущий None для conn/db.
+— Любой сбой в репозитории не роняет хендлер: пользователю возвращается понятное сообщение об ошибке.
+
+СОВЕТЫ ПО ПОДДЕРЖКЕ:
+— При добавлении новых функций репозитория: расширяйте кортежи имён в _try_repo_funcs / *_names_* списках.
+— Если репозиторий ожидает другие сигнатуры, добавляйте варианты в _try_signatures / _call_repo_variants.
+— Не меняйте логику в хендлерах без необходимости: весь «клей» с репозиторием сосредоточен в утилитах выше.
+
 — ID печатаются в <code>…</code> для быстрого копирования,
 — «ожидающие» и «зарегистрированные» блоками,
 — хвост «Доступные команды» читается из handlers/help.headlers.help.txt (есть fallback),
@@ -13,25 +38,27 @@ from __future__ import annotations
 import logging
 import inspect
 from html import escape
-from pathlib import Path
 from typing import Any, Iterable, Optional, Callable
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from utils.decorators import require_admin
-from database.repository import UserRepository
+import database.users_repository as user_repository
 from handlers.help_texts import HELP_USERS_SHORT
 logger = logging.getLogger(__name__)
 
 def _load_admin_users_footer() -> str:
-    # Берём короткую шпаргалку из help_texts, без файлов на диске
+    # Фолбэк-загрузка краткой справки: берём из help_texts (без файловой системы).
     return HELP_USERS_SHORT
 
-# --- В _norm_user ДОБАВЬ поле 'status' в возвращаемый словарь
 def _norm_user(u: Any) -> dict[str, Any]:
-    """Приводим запись пользователя к унифицированному виду."""
+    """Приводим запись пользователя к унифицированному виду.
+    Допустимы как dict-объекты, так и объекты с атрибутами.
+    Поля ищутся «по нескольким вариантам имён», берётся первое непустое.
+    """
     def g(obj, *keys, default=None):
+        # Универсальный геттер по альтернативным ключам/атрибутам.
         for k in keys:
             if isinstance(obj, dict):
                 if k in obj and obj[k] is not None:
@@ -49,6 +76,7 @@ def _norm_user(u: Any) -> dict[str, Any]:
     full = (" ".join([x for x in (fn, ln) if x]) or (g(u, "name", "full_name", default="") or "")).strip()
     username = (g(u, "username", "user_name", "login", default="") or "").lstrip("@")
     status = (g(u, "status", default="") or "").strip().lower()
+    # «Одобрен» — либо по булевым полям, либо по человекочитаемому статусу.
     is_approved = bool(
         g(u, "is_approved", "approved", default=False)
         or status in {"approved", "active", "ok"}
@@ -64,35 +92,37 @@ def _norm_user(u: Any) -> dict[str, Any]:
         "is_approved": is_approved,
         "is_admin": is_admin,
         "group_key": group_key,
-        "status": status,
+        "status": status,  # нормализованный «текстовый» статус (если есть)
     }
 
-
 def _try_repo_funcs(module, names: Iterable[str]) -> Optional[Callable[..., Any]]:
-    """Вернёт первую существующую функцию из набора имён."""
+    """Вернёт первую существующую функцию из набора имён.
+    Используется для совместимости с разными вариантами API.
+    """
     for n in names:
         fn = getattr(module, n, None)
         if callable(fn):
             return fn
     return None
 
-
 def _safe_call(fn: Optional[Callable[..., Any]], *args, **kwargs) -> Any:
     """
-    Аккуратно вызываем функции репозитория.
-    Больше НЕ подсовываем None вслепую — только если первый небинденый параметр похож на conn/db.
+    Безопасно вызываем функции репозитория.
+    — Возвращает None при ошибках, чтобы не падали хендлеры.
+    — Особая обработка TypeError: если первый параметр похож на conn/db/session,
+      пробуем подставить ведущий None.
     """
     if fn is None:
         return None
     try:
         return fn(*args, **kwargs)
     except TypeError as e:
-        # Попробуем определить, действительно ли нужен "conn"/"db" первым параметром
+        # Попытка угадать необходимость ведущего conn/db аргумента.
         try:
             sig = inspect.signature(fn)
             params = list(sig.parameters.values())
 
-            # если метод уже привязан к экземпляру (bound), выкидываем "self"
+            # Если метод bound (у инстанса), «self» пропускаем.
             if getattr(fn, "__self__", None) is not None and params:
                 params = params[1:]
 
@@ -108,10 +138,8 @@ def _safe_call(fn: Optional[Callable[..., Any]], *args, **kwargs) -> Any:
         logger.warning("Repo call failed: %s", e)
         return None
 
-
-
-
 def _format_user_line(u: dict[str, Any], with_icon: bool = True) -> str:
+    # Форматируем одну строку пользователя для HTML-ответа.
     icon = "👑" if u.get("is_admin") else "👤"
     uid = u.get("uid")
     name = escape((u.get("name") or "").strip()) or str(uid)
@@ -123,30 +151,16 @@ def _format_user_line(u: dict[str, Any], with_icon: bool = True) -> str:
 
 
 def _get_all_users() -> list[dict[str, Any]]:
-    """Достаёт всех пользователей из user_repository (с fallback по именам функций)."""
     try:
-        from database import user_repository as user_repo
+        repo = user_repository
+        raw = repo.get_all_users() or []
     except Exception as e:
-        logger.error("user_repository import failed: %s", e)
+        logger.error("get_all_users via users_repository failed: %s", e)
         return []
-
-    getter = _try_repo_funcs(
-        user_repo,
-        (
-            "list_users",
-            "list_all_users",
-            "get_all_users",
-            "all_users",
-            "users_all",
-            "get_users",
-        ),
-    )
-    raw = _safe_call(getter) or []
+    # Нормализация к вашему формату
     return [_norm_user(x) for x in raw if x is not None]
 
 
-# --- ЗАМЕНИ целиком _get_pending_users на:
-# --- ЗАМЕНИ целиком _get_pending_users на:
 def _get_pending_users() -> list[dict[str, Any]]:
     """
     Определяем «ожидающих» только по признаку is_approved=False
@@ -158,9 +172,12 @@ def _get_pending_users() -> list[dict[str, Any]]:
 
 def _call_repo_variants(fn: Callable[..., Any], *base_args) -> Optional[bool]:
     """
-    Пробуем несколько сигнатур вызова функции репозитория:
-    (user_id), (user_id, True), (None, user_id), (None, user_id, True).
-    Возвращаем None если все варианты не сработали, иначе bool-значение результата.
+    Универсальный перебор сигнатур репозитория для bool-операций.
+    Пробуем: (user_id), (user_id, True), (None, user_id), (None, user_id, True).
+    Возвращаем:
+      — True/False по результату,
+      — True если функция ничего не вернула (считаем успехом),
+      — None если ни один вариант не подошёл/упал.
     """
     variants = [
         base_args,
@@ -171,7 +188,7 @@ def _call_repo_variants(fn: Callable[..., Any], *base_args) -> Optional[bool]:
     for args in variants:
         try:
             res = fn(*args)
-            # Некоторые функции ничего не возвращают — считаем это успехом
+            # Отсутствие возвращаемого значения трактуем как успех.
             return True if res is None else bool(res)
         except TypeError:
             continue
@@ -182,9 +199,11 @@ def _call_repo_variants(fn: Callable[..., Any], *base_args) -> Optional[bool]:
 
 def _try_signatures(fn: Callable[..., Any], argsets: list[tuple]) -> Optional[bool]:
     """
-    Пробуем вызвать fn с разными наборами аргументов.
-    Для каждой сигнатуры пробуем ещё вариант с ведущим None (на случай conn/db).
-    Возвращаем None, если ничего не подошло; иначе bool результата (None -> True).
+    Перебираем наборы аргументов и вариант с ведущим None (conn/db).
+    Результат:
+      — bool по возвращаемому значению,
+      — True, если функция ничего не вернула,
+      — None, если ничего не подошло.
     """
     for args in argsets:
         for prefix in ((), (None,)):
@@ -201,13 +220,14 @@ def _try_signatures(fn: Callable[..., Any], argsets: list[tuple]) -> Optional[bo
 
 def _approve_user_repo(user_id: int, admin_id: Optional[int] = None) -> bool:
     """
-    Пытаемся одобрить пользователя. Репозиторий может ожидать:
+    Одобряем пользователя через любое из поддерживаемых имён репозитория.
+    Репозиторий может ожидать:
       - approve_user(user_id)
       - approve_user(user_id, admin_id)
-      - и те же варианты с ведущим conn/None
+      - и те же варианты с ведущим conn/None.
     """
     try:
-        from database import user_repository as user_repo
+        import database.users_repository as user_repo
     except Exception as e:
         logger.error("user_repository import failed: %s", e)
         return False
@@ -231,11 +251,11 @@ def _approve_user_repo(user_id: int, admin_id: Optional[int] = None) -> bool:
 
 def _remove_from_pending_repo(user_id: int) -> Optional[bool]:
     """
-    Если в репозитории есть явная функция чистки pending — используем её.
+    Если в репозитории есть явная функция очистки «ожидающих» — используем её.
     Сигнатура ожидается как (user_id) [+ возможный ведущий None].
     """
     try:
-        from database import user_repository as user_repo
+        import database.users_repository as user_repo
     except Exception:
         return None
 
@@ -250,6 +270,7 @@ def _remove_from_pending_repo(user_id: int) -> Optional[bool]:
     return None
 
 def _set_group_repo(user_id: int, group_key: str) -> Optional[bool]:
+    """Назначение группы пользователю через group_repository (с поддержкой разных имён)."""
     try:
         from database import group_repository as group_repo
     except Exception:
@@ -263,24 +284,24 @@ def _set_group_repo(user_id: int, group_key: str) -> Optional[bool]:
             return _try_signatures(fn, [(user_id, group_key)])
     return None
 
-
-# ============================ handlers =====================================
-
 @require_admin
 async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Список пользователей: сначала ожидающие, затем одобренные. ID в <code>…</code>."""
-    repo = UserRepository()
+    """Список пользователей: сначала ожидающие, затем одобренные. ID в <code>…</code>.
+    Группировка и компактный формат для удобного обзора.
+    """
+    repo = user_repository
     all_users = repo.get_all_users()
     pending = [u for u in all_users if not u.get("is_approved")]
     approved = [u for u in all_users if u.get("is_approved")]
 
     def display_name(u: dict) -> str:
+        # Человекочитаемое имя: first+last, иначе username, иначе user_id.
         fn = (u.get("first_name") or "").strip()
         ln = (u.get("last_name") or "").strip()
         full = f"{fn} {ln}".strip()
         return full or (u.get("username") or "").lstrip("@") or str(u.get("user_id"))
 
-    # админы вперёд, затем по человекочитаемому имени
+    # Сортировка: админы вперёд, затем по имени (регистронезависимо).
     def sort_key(u: dict):
         is_admin = str(u.get("role", "")).lower() == "admin"
         return (not is_admin, display_name(u).lower())
@@ -304,6 +325,7 @@ async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         lines.append("— пока никого нет")
 
+    # «Хвост» со справкой по командам
     footer = _load_admin_users_footer()
     if footer:
         lines.append("")
@@ -311,11 +333,10 @@ async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
-
 @require_admin
 async def admin_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Список ожидающих одобрения (подробно)."""
-    repo = UserRepository()
+    repo = user_repository
     pend = repo.get_pending_users()
     if not pend:
         await update.message.reply_text("✅ Нет ожидающих пользователей.")
@@ -333,10 +354,11 @@ async def admin_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"{escape(display_name(u))} <code>{u['user_id']}</code>{tail}")
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
-
 @require_admin
 async def admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Одобрить: /admin_approve <user_id> [group_key]."""
+    """Одобрить: /admin_approve <user_id> [group_key].
+    Поддерживает опциональное назначение группы вторым аргументом.
+    """
     if not context.args:
         await update.message.reply_text(
             "❌ Использование: <code>/admin_approve</code> <i>user_id</i> [<i>group_key</i>]",
@@ -350,7 +372,7 @@ async def admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     admin_id = update.effective_user.id if update.effective_user else None
-    repo = UserRepository()
+    repo = user_repository
     ok = repo.approve_user(user_id, admin_id or user_id)
 
     msg_parts = []
@@ -363,7 +385,7 @@ async def admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # опционально назначить группу, если передали второй аргумент
+    # Опционально назначить группу (второй аргумент).
     if len(context.args) > 1:
         group_key = (context.args[1] or "").strip()
         if group_key:
@@ -380,10 +402,11 @@ async def admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(" ".join(msg_parts), parse_mode="HTML")
 
-
 @require_admin
 async def admin_removeuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Удалить: /admin_removeuser <user_id> (работает через UserRepository)."""
+    """Удалить: /admin_removeuser <user_id>.
+    Алиас remove_user для совместимости с импортами.
+    """
     if not context.args:
         await update.message.reply_text(
             "❌ Использование: <code>/admin_removeuser</code> <i>user_id</i>",
@@ -396,7 +419,7 @@ async def admin_removeuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ user_id должен быть числом")
         return
 
-    repo = UserRepository()
+    repo = user_repository
     ok = repo.remove_user(user_id)
 
     if ok:
@@ -404,147 +427,70 @@ async def admin_removeuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"❌ Не удалось удалить пользователя <code>{user_id}</code>.", parse_mode="HTML")
 
-# Алиас под импорт в main.py
-remove_user = admin_removeuser
-
-@require_admin
-async def admin_set_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Назначить группу: /admin_set_group <user_id> <group_key>."""
-    if len(context.args) < 2:
-        await update.message.reply_text("❌ Использование: <code>/admin_set_group</code> <i>user_id</i> <i>group_key</i>", parse_mode="HTML")
-        return
-    try:
-        user_id = int(context.args[0])
-    except Exception:
-        await update.message.reply_text("❌ user_id должен быть числом")
-        return
-    group_key = context.args[1].strip()
-
-    try:
-        from database import group_repository as group_repo
-    except Exception as e:
-        await update.message.reply_text(f"❌ Репозиторий групп недоступен: {e}")
-        return
-
-    set_fn = _try_repo_funcs(group_repo, ("set_user_group", "assign_user_to_group", "set_group"))
-    ok = bool(_safe_call(set_fn, user_id, group_key))
-    if ok:
-        await update.message.reply_text(f"✅ Назначена группа <code>{escape(group_key)}</code> пользователю <code>{user_id}</code>", parse_mode="HTML")
-    else:
-        await update.message.reply_text("❌ Не удалось назначить группу", parse_mode="HTML")
-
-
-@require_admin
-async def admin_unset_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Снять группу: /admin_unset_group <user_id>."""
-    if not context.args:
-        await update.message.reply_text("❌ Использование: <code>/admin_unset_group</code> <i>user_id</i>", parse_mode="HTML")
-        return
-    try:
-        user_id = int(context.args[0])
-    except Exception:
-        await update.message.reply_text("❌ user_id должен быть числом")
-        return
-
-    try:
-        from database import group_repository as group_repo
-    except Exception as e:
-        await update.message.reply_text(f"❌ Репозиторий групп недоступен: {e}")
-        return
-
-    unset_fn = _try_repo_funcs(group_repo, ("unset_user_group", "remove_user_from_group", "unset_group"))
-    ok = bool(_safe_call(unset_fn, user_id))
-    if ok:
-        await update.message.reply_text(f"✅ С пользователя <code>{user_id}</code> снята группа", parse_mode="HTML")
-    else:
-        await update.message.reply_text("❌ Не удалось снять группу", parse_mode="HTML")
-
-
-@require_admin
-async def admin_list_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Пользователи в группе: /admin_list_group <group_key>."""
-    if not context.args:
-        await update.message.reply_text("❌ Использование: <code>/admin_list_group</code> <i>group_key</i>", parse_mode="HTML")
-        return
-    group_key = context.args[0].strip()
-
-    # пробуем получить прямо из group_repository
-    try:
-        from database import group_repository as group_repo
-    except Exception:
-        group_repo = None
-
-    rows = []
-    if group_repo:
-        getter = _try_repo_funcs(group_repo, ("list_users_in_group", "get_group_users", "group_users"))
-        rows = _safe_call(getter, group_key) or []
-
-    if not rows:
-        # fallback: фильтрация по всем пользователям
-        rows = [u for u in _get_all_users() if (u.get("group_key") or "") == group_key]
-
-    if not rows:
-        await update.message.reply_text(f"Группа <code>{escape(group_key)}</code>: — пусто", parse_mode="HTML")
-        return
-
-    lines = [f"👥 Пользователи в группе <code>{escape(group_key)}</code>:"]
-    for u in rows:
-        if not isinstance(u, dict) or "uid" not in u:
-            u = _norm_user(u)
-        lines.append(_format_user_line(u, with_icon=True))
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
-
-
 @require_admin
 async def admin_update_all_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обновление профилей (username/имена) в БД и показ результата."""
+    """Служебное обновление профилей: username/имена из Telegram.
+    Ожидается, что репозиторий вернёт:
+      — int (сколько обновлено),
+      — (updated, inserted),
+      — {"updated": X, "inserted": Y}.
+    """
     try:
-        from database import user_repository as user_repo
+        from database import users_repository as repo_mod
     except Exception as e:
         await update.message.reply_text(f"❌ Репозиторий пользователей недоступен: {e}")
         return
 
-    updater = _try_repo_funcs(user_repo, ("update_all_users", "refresh_all_users", "admin_update_all_users"))
-    res = _safe_call(updater)
+    # Ищем метод обновления под разными именами — совместимость с разными репозиториями.
+    updater = None
+    for name in ("update_all_users", "refresh_all_users", "admin_update_all_users"):
+        updater = getattr(repo_mod, name, None)
+        if callable(updater):
+            break
 
-    # Нет функции в репозитории или вызов не удался
-    if res is None:
+    if not updater:
         await update.message.reply_text("❌ Нет функции обновления в репозитории пользователей")
         return
 
-    # Если репозиторий возвращает целое — это количество обновлённых строк
-    if isinstance(res, int):
-        if res > 0:
-            await update.message.reply_text(f"✅ Обновлено профилей: <b>{res}</b>", parse_mode="HTML")
-        else:
-            await update.message.reply_text("ℹ️ Изменений не найдено")
+    try:
+        result = updater()
+    except TypeError:
+        # Возможно, метод ожидает context/db/None первым аргументом.
+        try:
+            result = updater(None)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка запуска обновления: {e}")
+            return
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка запуска обновления: {e}")
         return
 
-    # На всякий случай: если вернули dict со счётчиком
-    if isinstance(res, dict) and "updated" in res:
-        n = int(res.get("updated") or 0)
-        if n > 0:
-            await update.message.reply_text(f"✅ Обновлено профилей: <b>{n}</b>", parse_mode="HTML")
-        else:
-            await update.message.reply_text("ℹ️ Изменений не найдено")
-        return
+    # Нормализуем результат в (updated, inserted).
+    updated = inserted = None
+    if isinstance(result, dict):
+        updated = int(result.get("updated", 0))
+        inserted = int(result.get("inserted", 0))
+    elif isinstance(result, (tuple, list)):
+        if len(result) >= 2:
+            updated = int(result[0])
+            inserted = int(result[1])
+        elif len(result) == 1:
+            updated = int(result[0])
+    elif isinstance(result, int):
+        updated = result
 
-    # Фолбэк на старую реализацию (True/False)
-    if isinstance(res, bool):
-        await update.message.reply_text("✅ Готово" if res else "❌ Обновление не выполнено")
-        return
-
-    # Непредвидённый формат
-    await update.message.reply_text("ℹ️ Обновление выполнено, но формат ответа неизвестен")
-
-# Алиас под импорт в main.py
-async def update_all_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await admin_update_all_users(update, context)
-
+    if updated is None and inserted is None:
+        await update.message.reply_text("🔄 Обновление профилей инициировано")
+    else:
+        parts = []
+        if updated is not None:
+            parts.append(f"обновлено: <b>{updated}</b>")
+        if inserted is not None:
+            parts.append(f"новых: <b>{inserted}</b>")
+        await update.message.reply_text("✅ Обновление завершено — " + ", ".join(parts), parse_mode="HTML")
 
 @require_admin
 async def admin_promote(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выдать админ-права: /admin_promote <user_id>"""
     if not context.args:
         await update.message.reply_text("❌ Использование: <code>/admin_promote</code> <i>user_id</i>", parse_mode="HTML")
         return
@@ -554,49 +500,61 @@ async def admin_promote(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ user_id должен быть числом")
         return
 
-    try:
-        from database import user_repository as user_repo
-    except Exception as e:
-        await update.message.reply_text(f"❌ Репозиторий пользователей недоступен: {e}")
-        return
+    admin_id = update.effective_user.id if update.effective_user else None
 
-    try_names_bool = ("set_admin", "set_is_admin")
-    try_names_one  = ("promote_user", "make_admin")
-    try_names_role = ("set_role", "update_role", "change_role")
-
+    # 1) Пытаемся через текущий репозиторий (класс)
+    repo = user_repository
     ok = False
-    for name in try_names_bool:
-        fn = getattr(user_repo, name, None)
-        if callable(fn):
-            ok = bool(_safe_call(fn, user_id, True))
-            if ok is not None:
-                break
+    try:
+        if hasattr(repo, "promote_user") and callable(repo.promote_user):
+            ok = bool(repo.promote_user(user_id, admin_id))
+        elif hasattr(repo, "set_admin") and callable(repo.set_admin):
+            ok = bool(repo.set_admin(user_id, True, admin_id))
+        elif hasattr(repo, "set_role") and callable(repo.set_role):
+            ok = bool(repo.set_role(user_id, "admin", admin_id))
+    except Exception as e:
+        logger.warning("Repo class promote failed: %s", e)
 
+    # 2) Fallback: поддержка старых код-баз (модуль user_repository)
     if not ok:
-        for name in try_names_one:
-            fn = getattr(user_repo, name, None)
-            if callable(fn):
-                ok = bool(_safe_call(fn, user_id))
-                if ok is not None:
-                    break
+        try:
+            import database.users_repository as user_repo  # может отсутствовать в этой кодовой базе
+        except Exception:
+            user_repo = None
 
-    if not ok:
-        for name in try_names_role:
-            fn = getattr(user_repo, name, None)
-            if callable(fn):
-                ok = bool(_safe_call(fn, user_id, "admin"))
-                if ok is not None:
-                    break
+        if user_repo:
+            try_names_bool = ("set_admin", "set_is_admin")
+            try_names_one  = ("promote_user", "make_admin")
+            try_names_role = ("set_role", "update_role", "change_role")
+
+            for name in try_names_bool:
+                fn = getattr(user_repo, name, None)
+                if callable(fn):
+                    ok = bool(fn(user_id, True))
+                    if ok:
+                        break
+            if not ok:
+                for name in try_names_one:
+                    fn = getattr(user_repo, name, None)
+                    if callable(fn):
+                        ok = bool(fn(user_id))
+                        if ok:
+                            break
+            if not ok:
+                for name in try_names_role:
+                    fn = getattr(user_repo, name, None)
+                    if callable(fn):
+                        ok = bool(fn(user_id, "admin"))
+                        if ok:
+                            break
 
     if ok:
         await update.message.reply_text(f"✅ Пользователь <code>{user_id}</code> повышен до администратора", parse_mode="HTML")
     else:
         await update.message.reply_text(f"❌ Не удалось выдать админ-права пользователю <code>{user_id}</code>", parse_mode="HTML")
 
-
 @require_admin
 async def admin_demote(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Снять админ-права: /admin_demote <user_id>"""
     if not context.args:
         await update.message.reply_text("❌ Использование: <code>/admin_demote</code> <i>user_id</i>", parse_mode="HTML")
         return
@@ -606,69 +564,53 @@ async def admin_demote(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ user_id должен быть числом")
         return
 
-    try:
-        from database import user_repository as user_repo
-    except Exception as e:
-        await update.message.reply_text(f"❌ Репозиторий пользователей недоступен: {e}")
-        return
+    admin_id = update.effective_user.id if update.effective_user else None
 
-    try_names_bool = ("set_admin", "set_is_admin")
-    try_names_one  = ("demote_user", "remove_admin")
-    try_names_role = ("set_role", "update_role", "change_role")
-
+    repo = user_repository
     ok = False
-    for name in try_names_bool:
-        fn = getattr(user_repo, name, None)
-        if callable(fn):
-            ok = bool(_safe_call(fn, user_id, False))
-            if ok is not None:
-                break
+    try:
+        if hasattr(repo, "demote_user") and callable(repo.demote_user):
+            ok = bool(repo.demote_user(user_id, admin_id))
+        elif hasattr(repo, "set_admin") and callable(repo.set_admin):
+            ok = bool(repo.set_admin(user_id, False, admin_id))
+        elif hasattr(repo, "set_role") and callable(repo.set_role):
+            ok = bool(repo.set_role(user_id, "user", admin_id))
+    except Exception as e:
+        logger.warning("Repo class demote failed: %s", e)
 
     if not ok:
-        for name in try_names_one:
-            fn = getattr(user_repo, name, None)
-            if callable(fn):
-                ok = bool(_safe_call(fn, user_id))
-                if ok is not None:
-                    break
+        try:
+            import database.users_repository as user_repo
+        except Exception:
+            user_repo = None
 
-    if not ok:
-        for name in try_names_role:
-            fn = getattr(user_repo, name, None)
-            if callable(fn):
-                ok = bool(_safe_call(fn, user_id, "user"))
-                if ok is not None:
-                    break
+        if user_repo:
+            try_names_bool = ("set_admin", "set_is_admin")
+            try_names_one  = ("demote_user", "remove_admin")
+            try_names_role = ("set_role", "update_role", "change_role")
+
+            for name in try_names_bool:
+                fn = getattr(user_repo, name, None)
+                if callable(fn):
+                    ok = bool(fn(user_id, False))
+                    if ok:
+                        break
+            if not ok:
+                for name in try_names_one:
+                    fn = getattr(user_repo, name, None)
+                    if callable(fn):
+                        ok = bool(fn(user_id))
+                        if ok:
+                            break
+            if not ok:
+                for name in try_names_role:
+                    fn = getattr(user_repo, name, None)
+                    if callable(fn):
+                        ok = bool(fn(user_id, "user"))
+                        if ok:
+                            break
 
     if ok:
         await update.message.reply_text(f"✅ С пользователя <code>{user_id}</code> сняты админ-права", parse_mode="HTML")
     else:
         await update.message.reply_text(f"❌ Не удалось снять админ-права у пользователя <code>{user_id}</code>", parse_mode="HTML")
-
-
-# ===== Простой /admin_help (чтобы импорт в main.py не падал) ===============
-async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Короткая справка по админ-командам пользователей."""
-    footer = _load_admin_users_footer()
-    await update.message.reply_text(footer, parse_mode="HTML")
-
-
-# ===== Заглушки legacy-групп, чтобы не падал импорт из main.py =============
-
-async def admin_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("ℹ️ Legacy команды групп переехали. Используйте /admin_time_groups_*.", parse_mode="HTML")
-
-async def admin_group_create(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await admin_groups(update, context)
-
-async def admin_group_rename(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await admin_groups(update, context)
-
-async def admin_group_set_offset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await admin_groups(update, context)
-
-async def admin_group_set_epoch(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await admin_groups(update, context)
-
-async def admin_group_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await admin_groups(update, context)

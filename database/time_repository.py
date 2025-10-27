@@ -1,206 +1,81 @@
+# /home/telegrambot/shift_tracker_bot/database/time_repository.py
+# -*- coding: utf-8 -*-
+# -----------------------------------------------------------------------------
+# Назначение файла
+# -----------------------------------------------------------------------------
+# Этот модуль реализует операции над сущностями «тайм-профили» и «тайм-группы»
+# для бота расписаний. Здесь:
+#   • читаются/создаются/обновляются time_profiles, time_profile_slots, time_groups;
+#   • управляются участники time_group_members;
+#   • выдаётся сводная информация по группе/профилю для админских команд.
+#
+# Общие принципы:
+#   • Соединение с БД берётся из db_connection (psycopg2), курсоры — контекстные.
+#   • Все SQL — параметризованные (без конкатенации пользовательского ввода).
+#   • Форматы возврата — словари и списки словарей (для удобства сериализации).
+# -----------------------------------------------------------------------------
+
 import logging
-from datetime import datetime, date
+from datetime import datetime, date as _date_cls, date
 from .connection import db_connection
-from database.group_repository import list_groups, list_users_in_group
-from services.shift_calculator import ShiftCalculator
 
 logger = logging.getLogger(__name__)
-def list_group_users(group_key: str) -> list[dict]:
+
+try:
+    from zoneinfo import ZoneInfo  # py>=3.9
+except Exception:
+    ZoneInfo = None
+
+def now_local() -> datetime:
     """
-    Вернёт участников группы с позицией.
-    Формат: [{"user_id": int, "full_name": str, "username": str|None, "pos": int}, ...]
+    Текущее «операционное» локальное время бота.
+    В проекте UI и логика ориентируются на Москву, поэтому IANA tz — Europe/Moscow.
     """
-    with db_connection.connect() as conn, conn.cursor() as cur:
-        # получаем id группы по ключу
-        cur.execute("SELECT id FROM time_groups WHERE key = %s", (group_key,))
-        row = cur.fetchone()
-        if not row:
-            return []
-        group_id = row[0]
+    if ZoneInfo:
+        return datetime.now(ZoneInfo("Europe/Moscow"))
+    # Фолбэк без tzinfo (лучше установить python3-tzdata, чтобы работал ZoneInfo)
+    return datetime.now()
 
-        # выбираем участников
-        cur.execute(
-            """
-            SELECT 
-                tgu.user_id,
-                COALESCE(u.full_name,
-                         NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''),
-                         u.display_name,
-                         CAST(u.user_id AS TEXT)) AS full_name,
-                u.username,
-                tgu.pos
-            FROM time_group_users AS tgu
-            LEFT JOIN users AS u ON u.id = tgu.user_id
-            WHERE tgu.group_id = %s
-            ORDER BY tgu.pos ASC, tgu.user_id ASC
-            """,
-            (group_id,),
-        )
-        res = []
-        for user_id, full_name, username, pos in cur.fetchall():
-            res.append({
-                "user_id": user_id,
-                "full_name": full_name or "",
-                "username": username or None,
-                "pos": pos if pos is not None else 0,
-            })
-        return res
+def today_local():
+    """Текущая локальная дата (короткая обёртка)."""
+    return now_local().date()
+
+# -----------------------------------------------------------------------------#
+# Вспомогательные хелперы
+# -----------------------------------------------------------------------------#
+
+def _as_date(x):
+    """Приводит значение к date, если возможно (поддерживает ISO-строку)."""
+    if isinstance(x, _date_cls):
+        return x
+    try:
+        return _date_cls.fromisoformat(str(x))
+    except Exception:
+        return None
 
 
-def delete_time_group(group_key: str) -> bool:
-    """Удалить тайм-группу по ключу. Возвращает True, если что-то удалилось."""
-    with db_connection.connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM time_groups WHERE key = %s",
-            (group_key,),
-        )
-        return cur.rowcount > 0
+def _resolve_group_id(cur, group_key: str) -> int | None:
+    """Возвращает id группы по ключу, либо None."""
+    cur.execute("SELECT id FROM time_groups WHERE key = %s", (group_key,))
+    r = cur.fetchone()
+    return r[0] if r else None
 
-def delete_time_profile(profile_key: str) -> bool:
-    """Удалить тайм-профиль по ключу.
-    Работает только если нет связанных групп (time_groups).
-    Возвращает True, если профиль удалён.
-    """
-    with db_connection.connect() as conn, conn.cursor() as cur:
-        try:
-            cur.execute(
-                "DELETE FROM time_profiles WHERE key = %s",
-                (profile_key,),
-            )
-            return cur.rowcount > 0
-        except Exception as e:
-            # например, ForeignKey violation из-за связанных групп
-            raise e
 
-def create_profile(key: str, name: str, tz_name: str = None, tz_offset_hours: int = 0):
-    """Создать профиль времени"""
-    with db_connection.connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO time_profiles (key, name, tz_name, tz_offset_hours)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (key) DO UPDATE
-                SET name = EXCLUDED.name,
-                    tz_name = EXCLUDED.tz_name,
-                    tz_offset_hours = EXCLUDED.tz_offset_hours
-            RETURNING id
-            """,
-            (key, name, tz_name, tz_offset_hours),
-        )
-        return cur.fetchone()[0]
-
-def list_profiles():
-    """Вернуть список всех профилей времени"""
-    with db_connection.connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT key, name, tz_name, tz_offset_hours
-            FROM time_profiles
-            ORDER BY name
-            """
-        )
-        rows = cur.fetchall()
-        return [
-            {"key": r[0], "name": r[1], "tz_name": r[2], "tz_offset_hours": r[3]}
-            for r in rows
-        ]
-
-def add_slot(profile_key: str, pos: int, start: str, end: str, name: str = None):
-    """Добавить слот в профиль времени"""
-    with db_connection.connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO time_profile_slots (profile_id, pos, name, start_time, end_time)
-            SELECT tp.id, %s, %s, %s, %s
-            FROM time_profiles tp
-            WHERE tp.key = %s
-            ON CONFLICT (profile_id, pos) DO UPDATE
-                SET name = EXCLUDED.name,
-                    start_time = EXCLUDED.start_time,
-                    end_time = EXCLUDED.end_time
-            RETURNING id
-            """,
-            (pos, name, start, end, profile_key),
-        )
-        return cur.fetchone()[0]
-
-def clear_profile_slots(profile_key: str):
-    """Очистить все слоты профиля"""
-    with db_connection.connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            DELETE FROM time_profile_slots
-            WHERE profile_id = (SELECT id FROM time_profiles WHERE key = %s)
-            """,
-            (profile_key,),
-        )
-        return cur.rowcount
-
-def add_user_to_group(group_key: str, user_id: int, base_pos: int):
-    """Добавить пользователя в тайм-группу"""
-    with db_connection.connect() as conn, conn.cursor() as cur:
-        sql = """
-        INSERT INTO time_group_members (time_group_id, user_id, base_pos)
-        SELECT tg.id, %s, %s
-        FROM time_groups tg
-        WHERE tg.key = %s
-        ON CONFLICT (time_group_id, user_id) DO UPDATE
-            SET base_pos = EXCLUDED.base_pos
-        """
-        cur.execute(sql, (user_id, base_pos, group_key))
-        return cur.rowcount > 0
-
-def remove_user_from_group(group_key: str, user_id: int):
-    """Удалить пользователя из тайм-группы"""
-    with db_connection.connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            DELETE FROM time_group_members
-            WHERE time_group_id = (SELECT id FROM time_groups WHERE key = %s)
-              AND user_id = %s
-            """,
-            (group_key, user_id),
-        )
-        return cur.rowcount > 0
-
-def list_groups():
-    """Вернуть список всех тайм-групп"""
-    with db_connection.connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT tg.key, tg.name, tp.key AS profile_key, tg.epoch,
-                   tg.rotation_period_days, tg.rotation_dir, tg.tz_name, tg.tz_offset_hours
-            FROM time_groups tg
-            JOIN time_profiles tp ON tg.profile_id = tp.id
-            ORDER BY tg.name
-            """
-        )
-        rows = cur.fetchall()
-        return [
-            {
-                "key": r[0],
-                "name": r[1],
-                "profile_key": r[2],
-                "epoch": r[3],
-                "period": r[4],
-                "rotation_dir": r[5],
-                "tz_name": r[6],
-                "tz_offset_hours": r[7],
-            }
-            for r in rows
-        ]
+# -----------------------------------------------------------------------------#
+# Чтение подробной информации по тайм-группе
+# -----------------------------------------------------------------------------#
 
 def get_group_info(group_key: str):
     """
     Вернуть подробную информацию по тайм-группе:
-    {
-      key, name, profile_key, epoch, period, rotation_dir, tz_name, tz_offset_hours,
-      members: [{user_id, base_pos, username, first_name, last_name}, ...],
-      slots:   [{pos, name, start_time, end_time}, ...]
-    }
+    - key, name, profile_key
+    - epoch, period, rotation_dir
+    - tz (жёстко Europe/Moscow для консистентности UI)
+    - members: [{user_id, base_pos, username, first_name, last_name}, ...]
+    - slots:   [{pos, name, start, end, start_time, end_time}, ...]
     """
     with db_connection.connect() as conn, conn.cursor() as cur:
-        # 1) Основная информация по группе
+        # 1) Шапка
         cur.execute(
             """
             SELECT tg.id,
@@ -220,6 +95,7 @@ def get_group_info(group_key: str):
         )
         row = cur.fetchone()
         if not row:
+            logger.debug("time_repo.get_group_info: key=%s -> NOT FOUND", group_key)
             return None
 
         group_id = row[0]
@@ -230,13 +106,15 @@ def get_group_info(group_key: str):
             "epoch": row[4],
             "period": row[5],
             "rotation_dir": row[6],
-            "tz_name": row[7],
-            "tz_offset_hours": row[8],
+            # TZ из БД игнорируем — фикс на Москву (как и раньше)
+            "tz": "Europe/Moscow",
+            "tz_name": "Europe/Moscow",
+            "tz_offset_hours": 0,
             "members": [],
             "slots": [],
         }
 
-        # 2) Участники группы
+        # 2) Участники
         cur.execute(
             """
             SELECT m.user_id,
@@ -247,7 +125,9 @@ def get_group_info(group_key: str):
             FROM time_group_members m
             LEFT JOIN users u ON u.user_id = m.user_id
             WHERE m.time_group_id = %s
-            ORDER BY m.base_pos, COALESCE(u.first_name,'') , COALESCE(u.last_name,''), COALESCE(u.username,''), m.user_id::text
+            ORDER BY m.base_pos,
+                     COALESCE(u.first_name,''), COALESCE(u.last_name,''),
+                     COALESCE(u.username,''), m.user_id::text
             """,
             (group_id,),
         )
@@ -263,7 +143,7 @@ def get_group_info(group_key: str):
             for r in members
         ]
 
-        # 3) Слоты профиля (для удобного отображения в /admin_tg_show)
+        # 3) Слоты профиля
         cur.execute(
             """
             SELECT s.pos, s.name, s.start_time, s.end_time
@@ -277,11 +157,10 @@ def get_group_info(group_key: str):
         slots = cur.fetchall() or []
 
         def _fmt(t):
-            # t может быть datetime.time или строка; приводим к HH:MM
             try:
                 return t.strftime("%H:%M")
             except Exception:
-                return str(t)[:5]  # на всякий случай
+                return str(t)[:5]
 
         info["slots"] = [
             {
@@ -289,68 +168,104 @@ def get_group_info(group_key: str):
                 "name": r[1] or "",
                 "start": _fmt(r[2]),
                 "end": _fmt(r[3]),
-                # оставим и старые ключи на совместимость, вдруг где-то еще нужны
                 "start_time": r[2],
                 "end_time": r[3],
             }
             for r in slots
         ]
 
-        return info
+    logger.debug(
+        "time_repo.get_group_info: key=%s members=%d slots=%d tz=%s",
+        info["key"], len(info["members"]), len(info["slots"]),
+        info.get("tz_name") or info.get("tz")
+    )
+    return info
 
-def set_group_tz(group_key: str, tz_name: str) -> bool:
-    """Установить IANA-часовой пояс для тайм-группы.
-       Пример tz_name: 'Europe/Moscow', 'Asia/Vladivostok'.
-       Возвращает True, если обновлена хотя бы одна строка.
-    """
+
+# -----------------------------------------------------------------------------#
+# Профили времени
+# -----------------------------------------------------------------------------#
+
+def create_profile(key: str, name: str, tz_name: str | None = None, tz_offset_hours: int = 0):
+    """Создать/обновить профиль времени (UPSERT по key)."""
     with db_connection.connect() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            UPDATE time_groups
-               SET tz_name = %s
-             WHERE key = %s
+            INSERT INTO time_profiles (key, name, tz_name, tz_offset_hours)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (key) DO UPDATE
+                SET name = EXCLUDED.name,
+                    tz_name = EXCLUDED.tz_name,
+                    tz_offset_hours = EXCLUDED.tz_offset_hours
+            RETURNING id
             """,
-            (tz_name, group_key),
+            (key, name, tz_name, tz_offset_hours),
         )
-        return cur.rowcount > 0
+        return cur.fetchone()[0]
 
-def set_group_period(group_key: str, days: int) -> bool:
-    """
-    Установить период ротации (в днях) для тайм-группы.
-    days >= 0. Значение 0 = без ротации (фиксированное назначение).
-    Возвращает True, если обновлена хотя бы одна строка.
-    """
-    if days < 0:
-        raise ValueError("period (days) не может быть отрицательным")
 
+def list_profiles():
+    """Вернуть список всех профилей времени (как есть в БД)."""
     with db_connection.connect() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            UPDATE time_groups
-               SET rotation_period_days = %s
-             WHERE key = %s
-            """,
-            (days, group_key),
+            SELECT key, name, tz_name, tz_offset_hours
+            FROM time_profiles
+            ORDER BY name
+            """
         )
-        return cur.rowcount > 0
+        rows = cur.fetchall() or []
+        return [
+            {"key": r[0], "name": r[1], "tz_name": r[2], "tz_offset_hours": r[3]}
+            for r in rows
+        ]
+
+
+def add_slot(profile_key: str, pos: int, start: str, end: str, name: str | None = None):
+    """Добавить/обновить слот профиля (UPSERT по (profile_id, pos))."""
+    with db_connection.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO time_profile_slots (profile_id, pos, name, start_time, end_time)
+            SELECT tp.id, %s, %s, %s, %s
+            FROM time_profiles tp
+            WHERE tp.key = %s
+            ON CONFLICT (profile_id, pos) DO UPDATE
+                SET name = EXCLUDED.name,
+                    start_time = EXCLUDED.start_time,
+                    end_time = EXCLUDED.end_time
+            RETURNING id
+            """,
+            (pos, name, start, end, profile_key),
+        )
+        return cur.fetchone()[0]
+
+
+def clear_profile_slots(profile_key: str) -> int:
+    """Очистить все слоты профиля. Возвращает кол-во удалённых строк."""
+    with db_connection.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM time_profile_slots
+            WHERE profile_id = (SELECT id FROM time_profiles WHERE key = %s)
+            """,
+            (profile_key,),
+        )
+        return cur.rowcount
+
 
 def get_profile_info(profile_key: str):
     """
-    Вернёт словарь с информацией о профиле времени и его слотах.
+    Вернуть профиль времени и его слоты.
 
-    Структура:
     {
       "key": str,
       "name": str|None,
       "tz_name": str|None,
-      "slots": [
-        {"pos": int, "start": "HH:MM", "end": "HH:MM", "name": str|None},
-        ...
-      ]
+      "slots": [{"pos": int, "start": "HH:MM", "end": "HH:MM", "name": str|None}, ...]
     }
     """
     with db_connection.connect() as conn, conn.cursor() as cur:
-        # 1) Находим сам профиль и его id
         cur.execute(
             """
             SELECT id, key, name, tz_name
@@ -364,14 +279,8 @@ def get_profile_info(profile_key: str):
             return None
 
         profile_id, key, name, tz_name = row
-        profile = {
-            "key": key,
-            "name": name,
-            "tz_name": tz_name,
-            "slots": [],
-        }
+        profile = {"key": key, "name": name, "tz_name": tz_name, "slots": []}
 
-        # 2) Тянем слоты по profile_id (а не по profile_key!)
         cur.execute(
             """
             SELECT pos, start_time, end_time, name
@@ -393,28 +302,23 @@ def get_profile_info(profile_key: str):
 
         return profile
 
-def update_name(key: str, new_name: str) -> bool:
-    if not key or not new_name:
-        return False
 
-    with db_connection.get_connection() as conn:
-        cur = conn.cursor()
-        cur.execute(f"UPDATE {TABLE} SET name = %s WHERE key = %s", (new_name.strip(), key.strip().lower()))
-        conn.commit()
-        return cur.rowcount > 0
+# -----------------------------------------------------------------------------#
+# Группы времени
+# -----------------------------------------------------------------------------#
 
 def create_time_group(
     group_key: str,
     profile_key: str,
-    epoch,                     # str | datetime.date | datetime.datetime
+    epoch,                     # str | date | datetime
     period_days: int,
     rotation_dir: int = 1,
-    tz_name: str | None = None,   # игнорируем, tz берём из профиля
-    name: str | None = None,      # ✅ НОВОЕ: «человеческое» имя группы
+    tz_name: str | None = None,   # игнорируем — tz берём из профиля
+    name: str | None = None,      # «человеческое» имя группы
 ):
     """Создать/обновить тайм-группу. Часовой пояс ВСЕГДА наследуем от профиля."""
-    # --- нормализация epoch ---
-    if isinstance(epoch, date):
+    # Нормализация epoch
+    if isinstance(epoch, _date_cls):
         epoch_date = epoch if not isinstance(epoch, datetime) else epoch.date()
     elif isinstance(epoch, str):
         s = epoch.strip()
@@ -428,14 +332,14 @@ def create_time_group(
             # формат ДД.ММ -> текущий год
             try:
                 d, m = s.split(".")
-                epoch_date = date(date.today().year, int(m), int(d))
+                epoch_date = _date_cls(_date_cls.today().year, int(m), int(d))
             except Exception as e:
                 raise ValueError(f"Неверный формат даты epoch: {epoch!r}") from e
     else:
         raise TypeError(f"epoch должен быть str или date, получено: {type(epoch).__name__}")
 
     with db_connection.connect() as conn, conn.cursor() as cur:
-        # 1) получаем профиль
+        # 1) получаем профиль (берём tz поля отсюда)
         cur.execute(
             "SELECT id, name, tz_name, tz_offset_hours FROM time_profiles WHERE key = %s",
             (profile_key,),
@@ -447,17 +351,15 @@ def create_time_group(
             )
 
         profile_id, profile_name, prof_tz_name, prof_tz_offset = prof
-
-        # ✅ имя группы: предпочтение явному name; иначе можно взять profile_name; fallback — group_key
         group_name = (name or profile_name or group_key).strip()
 
-        # 2) upsert группы, tz берём из профиля
+        # 2) UPSERT группы; tz всегда берём из профиля
         cur.execute(
             """
             INSERT INTO time_groups
-                (key,  name,       profile_id, epoch, rotation_period_days, rotation_dir, tz_name,      tz_offset_hours)
+                (key,  name,       profile_id, epoch, rotation_period_days, rotation_dir, tz_name, tz_offset_hours)
             VALUES
-                (%s,   %s,         %s,         %s,    %s,                   %s,          %s,            %s)
+                (%s,   %s,         %s,         %s,    %s,                   %s,          %s,      %s)
             ON CONFLICT (key) DO UPDATE SET
                 name                 = EXCLUDED.name,
                 profile_id           = EXCLUDED.profile_id,
@@ -475,11 +377,249 @@ def create_time_group(
                 epoch_date,
                 period_days,
                 rotation_dir,
-                prof_tz_name,       # из профиля
-                prof_tz_offset,     # из профиля
+                prof_tz_name,
+                prof_tz_offset,
             ),
         )
         row = cur.fetchone()
         if not row:
             raise RuntimeError("Не удалось создать/обновить тайм-группу (RETURNING не вернул id)")
         return row[0]
+
+
+def delete_time_group(group_key: str) -> bool:
+    """Удалить тайм-группу по ключу. Возвращает True, если что-то удалилось."""
+    with db_connection.connect() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM time_groups WHERE key = %s", (group_key,))
+        return cur.rowcount > 0
+
+# ---- Совместимые алиасы под разные вызовы из хендлеров ----
+def set_epoch(group_key: str, epoch: _date_cls) -> bool:
+    """Алиас к set_group_epoch (совместимость)."""
+    return set_group_epoch(group_key, epoch)
+
+def update_group_epoch(group_key: str, epoch: _date_cls) -> bool:
+    """Алиас к set_group_epoch (совместимость)."""
+    return set_group_epoch(group_key, epoch)
+
+def admin_time_groups_set_epoch(group_key: str, epoch: _date_cls) -> bool:
+    """Алиас к set_group_epoch (совместимость)."""
+    return set_group_epoch(group_key, epoch)
+
+
+def set_group_tz(group_key: str, tz_name: str) -> bool:
+    """Установить IANA-часовой пояс для тайм-группы."""
+    with db_connection.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE time_groups
+               SET tz_name = %s
+             WHERE key = %s
+            """,
+            (tz_name, group_key),
+        )
+        return cur.rowcount > 0
+
+
+def set_group_period(group_key: str, days: int) -> bool:
+    """Установить период ротации (в днях). 0 = без ротации."""
+    if days < 0:
+        raise ValueError("period (days) не может быть отрицательным")
+    with db_connection.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE time_groups
+               SET rotation_period_days = %s
+             WHERE key = %s
+            """,
+            (days, group_key),
+        )
+        return cur.rowcount > 0
+
+
+def set_group_epoch(group_key: str, epoch: _date_cls) -> bool:
+    """Обновить epoch у тайм-группы."""
+    with db_connection.connect() as conn, conn.cursor() as cur:
+        # В некоторых схемах нет колонки updated_at — обновляем только epoch.
+        cur.execute(
+            """
+            UPDATE time_groups
+               SET epoch = %s
+             WHERE key = %s
+            """,
+            (epoch, group_key),
+        )
+        return cur.rowcount > 0
+
+
+def update_name(key: str, new_name: str) -> bool:
+    """Переименование группы по ключу."""
+    if not key or not new_name:
+        return False
+    with db_connection.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE time_groups SET name = %s WHERE key = %s",
+            (new_name.strip(), key.strip().lower()),
+        )
+        return cur.rowcount > 0
+
+
+# -----------------------------------------------------------------------------#
+# Список тайм-групп
+# -----------------------------------------------------------------------------#
+def list_groups() -> list[dict]:
+    """
+    Вернуть список всех тайм-групп.
+    Формат элементов:
+      {
+        "key": str,
+        "name": str|None,
+        "profile_key": str|None,
+        "epoch": date|str|None,
+        "rotation_period_days": int|None,
+        "rotation_dir": int|None,
+        "tz_name": str|None,
+        "tz_offset_hours": int|None,
+      }
+    """
+    with db_connection.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                tg.key,
+                tg.name,
+                tp.key    AS profile_key,
+                tg.epoch,
+                tg.rotation_period_days,
+                tg.rotation_dir,
+                tg.tz_name,
+                tg.tz_offset_hours
+            FROM time_groups tg
+            LEFT JOIN time_profiles tp ON tp.id = tg.profile_id
+            ORDER BY COALESCE(tg.name, tg.key)
+            """
+        )
+        rows = cur.fetchall() or []
+        return [
+            {
+                "key": r[0], "name": r[1], "profile_key": r[2], "epoch": r[3],
+                "rotation_period_days": r[4], "rotation_dir": r[5],
+                "tz_name": r[6], "tz_offset_hours": r[7],
+            } for r in rows
+        ]
+
+# Алиасы под разные старые вызовы
+def groups_list() -> list[dict]:
+    return list_groups()
+
+def list_time_groups() -> list[dict]:
+    return list_groups()
+
+# -----------------------------------------------------------------------------#
+# Участники групп
+# -----------------------------------------------------------------------------#
+
+def add_user_to_group(group_key: str, user_id: int, base_pos: int) -> bool:
+    """Добавить пользователя в тайм-группу/обновить его базовую позицию."""
+    with db_connection.connect() as conn, conn.cursor() as cur:
+        group_id = _resolve_group_id(cur, group_key)
+        if group_id is None:
+            return False
+        cur.execute(
+            """
+            INSERT INTO time_group_members (time_group_id, user_id, base_pos)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (time_group_id, user_id) DO UPDATE
+                SET base_pos = EXCLUDED.base_pos
+            """,
+            (group_id, user_id, base_pos),
+        )
+        return True
+
+
+def remove_user_from_group(group_key: str, user_id: int) -> bool:
+    """Удалить пользователя из тайм-группы."""
+    with db_connection.connect() as conn, conn.cursor() as cur:
+        group_id = _resolve_group_id(cur, group_key)
+        if group_id is None:
+            return False
+        cur.execute(
+            """
+            DELETE FROM time_group_members
+             WHERE time_group_id = %s AND user_id = %s
+            """,
+            (group_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+def set_user_pos(group_key: str, user_id: int, pos: int) -> bool:
+    """
+    Обновляет базовую позицию участника в группе (time_group_members.base_pos).
+    Если записи нет — создаёт.
+    """
+    with db_connection.connect() as conn, conn.cursor() as cur:
+        group_id = _resolve_group_id(cur, group_key)
+        if group_id is None:
+            return False
+
+        # UPDATE → если 0 строк, делаем INSERT (с ON CONFLICT)
+        cur.execute(
+            """
+            UPDATE time_group_members
+               SET base_pos = %s
+             WHERE time_group_id = %s AND user_id = %s
+            """,
+            (int(pos), group_id, int(user_id)),
+        )
+        if cur.rowcount == 0:
+            cur.execute(
+                """
+                INSERT INTO time_group_members (time_group_id, user_id, base_pos)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (time_group_id, user_id) DO UPDATE
+                    SET base_pos = EXCLUDED.base_pos
+                """,
+                (group_id, int(user_id), int(pos)),
+            )
+        return True
+
+
+def list_group_users(group_key: str) -> list[dict]:
+    """
+    Вернуть участников группы с позицией.
+    Формат: [{"user_id": int, "full_name": str, "username": str|None, "pos": int}, ...]
+    """
+    with db_connection.connect() as conn, conn.cursor() as cur:
+        group_id = _resolve_group_id(cur, group_key)
+        if group_id is None:
+            return []
+
+        cur.execute(
+            """
+            SELECT 
+                m.user_id,
+                COALESCE(
+                    NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''),
+                    u.full_name,
+                    u.display_name,
+                    CAST(u.user_id AS TEXT)
+                ) AS full_name,
+                u.username,
+                m.base_pos
+            FROM time_group_members AS m
+            LEFT JOIN users AS u ON u.user_id = m.user_id
+            WHERE m.time_group_id = %s
+            ORDER BY m.base_pos ASC, m.user_id ASC
+            """,
+            (group_id,),
+        )
+        res = []
+        for user_id, full_name, username, pos in cur.fetchall() or []:
+            res.append({
+                "user_id": user_id,
+                "full_name": (full_name or "").strip(),
+                "username": username or None,
+                "pos": int(pos) if pos is not None else 0,
+            })
+        return res

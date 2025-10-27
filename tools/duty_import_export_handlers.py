@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-# Telegram handlers for duty import/export (CSV without RACI; only base columns)
+# duty_import_export_handlers.py — /home/telegrambot/shift_tracker_bot/tools/duty_import_export_handlers.py
+# duty_import_export_handlers.py — /home/telegrambot/shift_tracker_bot/tools/duty_import_export_handlers.py# Telegram handlers for duty import/export (CSV without RACI; only base columns)
 # python-telegram-bot v20+
 import os
 import csv

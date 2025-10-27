@@ -3,7 +3,7 @@
 import logging
 from typing import Optional
 
-from database import user_repository
+import database.users_repository as user_repository
 from services.user_manager import user_manager
 from database.connection import db_connection
 from config import config

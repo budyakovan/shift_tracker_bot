@@ -3,11 +3,6 @@
 .env.local
 .env.production
 
-#Заметки
-.notes
-# Ignore CSV
-*.csv
-
 # Python
 __pycache__/
 *.pyc
@@ -41,3 +36,9 @@ Thumbs.db
 
 # игнорировать все CSV
 *.csv
+
+#Заметки
+.notes
+
+#git
+.gitignore

@@ -1,4 +1,4 @@
-
+# /home/telegrambot/shift_tracker_bot/handlers/duty_catalog.py
 # -*- coding: utf-8 -*-
 # Handlers to view the duty catalog (without RACI)
 from telegram import Update

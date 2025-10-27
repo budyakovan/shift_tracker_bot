@@ -1,4 +1,6 @@
+# /home/telegrambot/shift_tracker_bot/handlers/help_handlers.py
 # -*- coding: utf-8 -*-
+
 import logging
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -16,9 +18,16 @@ from handlers.help_texts import (
     HELP_VACATIONS_SHORT,
     HELP_SICK_FULL,
     HELP_SICK_SHORT,
-    HELP_ADMIN_ALL_FULL,
     HELP_DUTIES_SHORT,
     HELP_DUTIES_FULL,
+    HELP_LOCATION_FULL,
+    HELP_LOCATION_SHORT,
+    HELP_RANK_ROTATION_FULL,
+    HELP_RANK_ROTATION_SHORT,
+    HELP_RANK_FULL,
+    HELP_RANK_SHORT,
+    HELP_HOLIDAYS_FULL,
+    HELP_HOLIDAYS_SHORT,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,12 +75,34 @@ async def help_sick_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_sick_short_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP_SICK_SHORT, parse_mode="HTML")
 
-# admin all
-async def help_admin_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(HELP_ADMIN_ALL_FULL, parse_mode="HTML")
 
 async def help_duties_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP_DUTIES_FULL, parse_mode="HTML")
 
 async def help_duties_short_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP_DUTIES_SHORT, parse_mode="HTML")
+
+# location
+async def help_location_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(HELP_LOCATION_FULL, parse_mode="HTML")
+
+async def help_location_short_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(HELP_LOCATION_SHORT, parse_mode="HTML")
+
+async def help_rank_rotation_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(HELP_RANK_ROTATION_FULL, parse_mode="HTML")
+
+async def help_rank_rotation_short_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(HELP_RANK_ROTATION_SHORT, parse_mode="HTML")
+
+async def help_rank_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(HELP_RANK_FULL, parse_mode="HTML")
+
+async def help_rank_short_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(HELP_RANK_SHORT, parse_mode="HTML")
+
+async def help_holidays_command(update, context):
+    await update.message.reply_text(HELP_HOLIDAYS_FULL, parse_mode="HTML")
+
+async def help_holidays_short_command(update, context):
+    await update.message.reply_text(HELP_HOLIDAYS_SHORT, parse_mode="HTML")

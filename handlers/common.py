@@ -1,6 +1,10 @@
+# /home/telegrambot/shift_tracker_bot/handlers/common.py
+
 from datetime import date, timedelta
 from telegram import Update
 from telegram.ext import ContextTypes
+from telegram.constants import ParseMode
+
 
 from services.user_manager import user_manager
 from services.auth_manager import auth_manager
@@ -43,10 +47,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_tomorrow(update, user_id)
         return
 
-    # По умолчанию — короткая подсказка
-    await update.message.reply_text(
-        "Не понял запрос. Доступно: /today, /tomorrow, /help",
-    )
 
 
 async def handle_today(update: Update, user_id: int):
@@ -72,22 +72,53 @@ async def handle_tomorrow(update: Update, user_id: int):
 
 
 async def my_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать пользователю его ID (если где-то используется)"""
+    """Показать пользователю его ID + информацию о чате/топике (если есть)"""
     user = update.effective_user
+    msg = update.effective_message
+    chat = update.effective_chat
+
     user_id = user.id
     username = user.username or "не установлен"
     first_name = user.first_name or ""
     last_name = user.last_name or ""
 
-    message = (
-        f"👤 <b>Ваша информация:</b>\n\n"
-        f"🆔 <b>Ваш ID:</b> <code>{user_id}</code>\n"
-        f"📛 <b>Имя:</b> {first_name} {last_name}\n"
-        f"🔗 <b>Username:</b> @{username}\n\n"
-        f"💡 <b>Этот ID нужен для:</b>\n"
-        f"• Одобрения аккаунта администратором\n"
-        f"• Технической поддержки\n"
-        f"• Идентификации в системе"
-    )
+    # Данные о чате/топике
+    chat_id = getattr(chat, "id", None)
+    chat_title = getattr(chat, "title", None) or getattr(chat, "full_name", None) or "личный диалог"
+    is_forum = bool(getattr(chat, "is_forum", False))
+    is_topic_message = bool(getattr(msg, "is_topic_message", False))
+    topic_id = getattr(msg, "message_thread_id", None)
 
-    await update.message.reply_text(message, parse_mode='HTML')
+    # Название топика (если PTB/Telegram это отдает)
+    topic_title = None
+    try:
+        topic_title = getattr(getattr(msg, "forum_topic", None), "name", None)
+    except Exception:
+        topic_title = None
+
+    lines = [
+        "👤 <b>Ваша информация:</b>",
+        "",
+        f"🆔 <b>Ваш ID:</b> <code>{user_id}</code>",
+        f"📛 <b>Имя:</b> {first_name} {last_name}".strip(),
+        f"🔗 <b>Username:</b> @{username}",
+        "",
+        "💬 <b>Текущий чат:</b>",
+        f"• Название: {chat_title}",
+        f"• Chat ID: <code>{chat_id}</code>",
+        f"• Форумный чат (темы): {'да' if is_forum else 'нет'}",
+    ]
+
+    # Если сообщение пришло из темы — покажем её ID и (если есть) название
+    if is_topic_message or (is_forum and topic_id is not None):
+        lines.append(f"🧵 <b>ID топика:</b> <code>{topic_id}</code>")
+        if topic_title:
+            lines.append(f"🏷️ <b>Название топика:</b> {topic_title}")
+        else:
+            lines.append("🏷️ <b>Название топика:</b> (не удалось определить)")
+    else:
+        # Подсказка, как получить ID нужной темы
+        lines.append("🧵 <i>Чтобы получить ID топика, вызовите /id прямо внутри нужной темы.</i>")
+
+    message = "\n".join(lines)
+    await update.message.reply_text(message, parse_mode=ParseMode.HTML, disable_web_page_preview=True)

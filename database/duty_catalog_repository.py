@@ -1,11 +1,23 @@
+#/home/telegrambot/shift_tracker_bot/database/duty_catalog_repository.py
 
 # -*- coding: utf-8 -*-
-"""Repository layer for the duty catalog (table: duty)."""
+"""
+Repository layer for the duty catalog (table: duty).
+
+Этот модуль отвечает за работу с таблицей duty в базе данных.
+Здесь реализованы функции для получения, добавления, обновления и удаления
+записей о «дежурствах» (или обязанностях).
+Фактически, это «прослойка» между бизнес-логикой и базой данных,
+которая обеспечивает удобный интерфейс для CRUD-операций.
+"""
+
 from typing import List, Optional, Dict, Any
 import psycopg2.extras
 from .connection import db_connection
 
+
 def _row_to_dict(row) -> Dict[str, Any]:
+    """Преобразует строку (DictRow) из БД в обычный словарь Python."""
     return {
         "key": row["key"],
         "title": row["title"],
@@ -18,7 +30,13 @@ def _row_to_dict(row) -> Dict[str, Any]:
         "created_at": row["created_at"],
     }
 
+
 def fetch_catalog(search: Optional[str] = None, limit: int = 500) -> List[Dict[str, Any]]:
+    """
+    Получает список всех активных дежурств (duty).
+    - Можно искать по ключу, названию или описанию (ILIKE %search%).
+    - По умолчанию возвращает максимум 500 записей.
+    """
     conn = db_connection.get_connection()
     with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
         if search:
@@ -46,38 +64,62 @@ def fetch_catalog(search: Optional[str] = None, limit: int = 500) -> List[Dict[s
             )
         return [_row_to_dict(r) for r in cur.fetchall()]
 
+
 def get_by_key(key: str) -> Optional[Dict[str, Any]]:
+    """
+    Возвращает запись duty по её ключу.
+    Если записи нет — возвращает None.
+    """
     conn = db_connection.get_connection()
     with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
         cur.execute(
             """
             SELECT key, title, weight, office_required, target_rank, min_rank, description, is_active, created_at
             FROM duty WHERE key=%s
-            """, (key,),
+            """,
+            (key,),
         )
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
+
 def set_active(key: str, is_active: bool) -> bool:
+    """
+    Обновляет флаг активности записи (is_active).
+    Возвращает True, если запись была изменена.
+    """
     conn = db_connection.get_connection()
     with conn.cursor() as cur:
         cur.execute("UPDATE duty SET is_active=%s WHERE key=%s", (is_active, key))
         conn.commit()
         return cur.rowcount > 0
 
+
 def upsert_duty(data: Dict[str, Any]) -> str:
-    """Insert or update one duty by key. Returns the key."""
+    """
+    Добавляет новую или обновляет существующую запись duty по ключу.
+    Возвращает ключ записи.
+
+    Правила:
+    - key и title обязательны.
+    - если запись уже существует, обновляются: title, description, weight,
+      office_required, target_rank (если не NULL), min_rank (если не NULL).
+    - is_active всегда устанавливается в TRUE.
+    """
     key = str(data.get("key") or "").strip()
     if not key:
         raise ValueError("key is required")
+
     title = str(data.get("title") or "").strip()
     if not title:
         raise ValueError("title is required")
+
     weight = int(data.get("weight") or 10)
     office_required = bool(int(data.get("office_required") or 0))
     target_rank = data.get("target_rank")
     min_rank = data.get("min_rank")
     description = (data.get("description") or "").strip()
+
     conn = db_connection.get_connection()
     with conn.cursor() as cur:
         cur.execute(
@@ -98,7 +140,12 @@ def upsert_duty(data: Dict[str, Any]) -> str:
         conn.commit()
     return key
 
+
 def delete_by_key(key: str) -> bool:
+    """
+    Удаляет запись duty по ключу.
+    Возвращает True, если запись была реально удалена.
+    """
     conn = db_connection.get_connection()
     with conn.cursor() as cur:
         cur.execute("DELETE FROM duty WHERE key=%s", (key,))

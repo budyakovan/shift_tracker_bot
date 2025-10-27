@@ -30,6 +30,12 @@ class Config:
     # Admin settings
     DEFAULT_ADMIN_IDS = [int(x) for x in os.getenv('DEFAULT_ADMIN_IDS', '').split(',') if x]
 
+    # чат для мониторинга AFK
+    #WORK_CHAT_ID = -1003096721091  # ID суперчата
+    #WORK_TOPIC_ID = 9  # ID темы внутри чата "Рабочий график"
+    #WORK_TOPIC_TITLE = "Рабочий график"  # опционально, только для информации
+
+
 # Проверяем обязательные переменные
 if not Config.BOT_TOKEN:
     print("⚠️  Внимание: BOT_TOKEN не найден в .env файле")

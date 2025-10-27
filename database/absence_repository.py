@@ -1,14 +1,29 @@
 # /home/telegrambot/shift_tracker_bot/database/absence_repository.py
 # -*- coding: utf-8 -*-
+
+ # -*- coding: utf-8 -*-
+"""
+Репозиторий для работы с отсутствиями пользователей в базе данных.
+Обеспечивает CRUD-операции для записей об отсутствиях (отпуски, больничные и т.д.)
+в таблице user_absences, включая создание, обновление, мягкое удаление и различные выборки.
+"""
+
 from typing import List, Optional, Dict, Any
-from datetime import date
+from datetime import date,  datetime
 import logging
 
 from .connection import db_connection   # только соединение
 
 logger = logging.getLogger(__name__)
 
+def get_afk_active(now_dt: datetime) -> List[Dict[str, Any]]:
+    """Совместимость: прокси на database.afk_repository.get_afk_active()."""
+    from .afk_repository import get_afk_active as _real
+    return _real(now_dt)
+
+
 def _row_to_dict(row) -> Dict[str, Any]:
+    """Преобразует строку БД в словарь Python с соответствующими полями"""
     return {
         "id": row[0], "user_id": row[1], "absence_type": row[2],
         "date_from": row[3], "date_to": row[4], "comment": row[5],
@@ -18,6 +33,7 @@ def _row_to_dict(row) -> Dict[str, Any]:
 
 def create_absence(user_id: int, absence_type: str, date_from: date, date_to: date,
                    comment: Optional[str], author_id: int) -> Optional[int]:
+    """Создает новую запись об отсутствии и возвращает ID созданной записи"""
     try:
         with db_connection.get_connection().cursor() as cur:
             cur.execute("""
@@ -36,9 +52,10 @@ def create_absence(user_id: int, absence_type: str, date_from: date, date_to: da
 def update_absence(absence_id: int, user_id: int, date_from: Optional[date] = None,
                    date_to: Optional[date] = None, comment: Optional[str] = None,
                    editor_id: Optional[int] = None, is_admin: bool = False) -> bool:
+    """Обновляет запись об отсутствии с проверкой прав доступа"""
     try:
         with db_connection.get_connection().cursor() as cur:
-            # Проверка прав
+            # Проверка прав - обычные пользователи могут редактировать только свои записи
             if not is_admin:
                 cur.execute("SELECT 1 FROM user_absences WHERE id=%s AND user_id=%s AND is_deleted=FALSE",
                             (absence_id, user_id))
@@ -47,6 +64,7 @@ def update_absence(absence_id: int, user_id: int, date_from: Optional[date] = No
             if cur.fetchone() is None:
                 return False
 
+            # Динамическое формирование SET-части запроса на основе переданных параметров
             fields, params = [], []
             if date_from is not None: fields.append("date_from=%s"); params.append(date_from)
             if date_to   is not None: fields.append("date_to=%s");   params.append(date_to)
@@ -65,6 +83,7 @@ def update_absence(absence_id: int, user_id: int, date_from: Optional[date] = No
         return False
 
 def soft_delete_absence(absence_id: int, user_id: int, is_admin: bool = False) -> bool:
+    """Выполняет мягкое удаление записи об отсутствии (установка флага is_deleted)"""
     try:
         with db_connection.get_connection().cursor() as cur:
             if not is_admin:
@@ -87,6 +106,7 @@ def soft_delete_absence(absence_id: int, user_id: int, is_admin: bool = False) -
 def list_absences(user_id: Optional[int] = None, absence_type: Optional[str] = None,
                   only_active: bool = True, from_date: Optional[date] = None,
                   to_date: Optional[date] = None) -> List[Dict[str, Any]]:
+    """Возвращает список отсутствий с возможностью фильтрации по различным параметрам"""
     where, params = ["1=1"], []
     if user_id is not None:      where.append("user_id=%s");      params.append(user_id)
     if absence_type is not None: where.append("absence_type=%s"); params.append(absence_type)
@@ -109,18 +129,28 @@ def list_absences(user_id: Optional[int] = None, absence_type: Optional[str] = N
 def list_absences_with_users(absence_type: Optional[str] = None,
                              from_date: Optional[date] = None,
                              to_date: Optional[date] = None,
-                             only_active: bool = True) -> List[Dict[str, Any]]:
+                             only_active: bool = True,
+                             user_id: Optional[int] = None,
+                             username: Optional[str] = None,
+                             user_ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
     """
     Возвращает записи об отсутствиях с ФИО/username пользователя.
     Требуется таблица users(user_id, first_name, last_name, username, ...).
     """
-    where, params = ["ua.is_deleted=FALSE" if only_active else "1=1"], []
+    where, params = (["ua.is_deleted=FALSE" if only_active else "1=1"], [])
     if absence_type is not None:
         where.append("ua.absence_type=%s"); params.append(absence_type)
     if from_date is not None:
         where.append("ua.date_to >= %s");   params.append(from_date)
     if to_date is not None:
         where.append("ua.date_from <= %s"); params.append(to_date)
+    if user_id is not None:
+        where.append("ua.user_id = %s");    params.append(user_id)
+    if user_ids:
+        where.append("ua.user_id = ANY(%s)");params.append(user_ids)
+    if username:
+        # точное сравнение логина без @, нечувствительно к регистру
+        where.append("LOWER(u.username) = LOWER(%s)"); params.append(username.lstrip("@"))
 
     sql = f"""
         SELECT

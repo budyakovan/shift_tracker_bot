@@ -1,7 +1,7 @@
 from datetime import date
 from typing import Dict, Optional
 from services.shift_calculator import ShiftCalculator
-from database import user_repository  # ← Добавьте импорт
+import database.users_repository as user_repository
 import logging
 
 logger = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ class UserManager:
             self.initialize_user(user_id)
 
         # Проверяем существование графика в базе
-        from database import schedule_repository
+        import database.schedules_repository as schedule_repository
         available_schedules = schedule_repository.get_all_schedules()
         schedule_names = [s['name'] for s in available_schedules]
 

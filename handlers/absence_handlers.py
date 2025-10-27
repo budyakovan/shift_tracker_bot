@@ -1,20 +1,37 @@
+# /home/telegrambot/shift_tracker_bot/handlers/absence_handlers.py
 # -*- coding: utf-8 -*-
+"""
+Модуль обработчиков команд Telegram-бота для управления отпусками и больничными.
+
+Содержит функции для:
+- Добавления, редактирования, удаления и просмотра отпусков и больничных
+- Административных операций (управление записями всех пользователей)
+- Формирования отчетов за период
+- Проверки прав доступа пользователей
+
+Все функции работают с базой данных через absence_repository и users_repository
+"""
+
 import logging
 from datetime import date, datetime, timedelta
+import re
 from telegram import Update
 from telegram.ext import ContextTypes
-
+from html import escape
+from handlers.help_texts import HELP_VACATIONS_SHORT
 from database.absence_repository import (
     create_absence, update_absence, soft_delete_absence, list_absences,
-    list_absences_period,   # <— НОВОЕ
+    list_absences_period, list_absences_with_users,  # <— НОВОЕ
 )
-from database.repository import UserRepository, USER_ROLE_ADMIN
+import database.users_repository as user_repository
+from database.users_repository import USER_ROLE_ADMIN
 
 # --- local date parsers (compat) ---
-from datetime import datetime, date
+from database import time_repository as time_repo
 
 
 def _parse_date_any(s: str) -> date:
+    """Парсит дату из строки в нескольких форматах"""
     s = s.strip()
     for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d.%m.%y"):
         try:
@@ -24,6 +41,7 @@ def _parse_date_any(s: str) -> date:
     raise ValueError(f"bad date: {s}")
 
 def _parse_dates(parts):
+    """Парсит две даты из списка строк и возвращает их в правильном порядке"""
     if len(parts) < 2:
         raise ValueError("need 2 dates: start end")
     d1 = _parse_date_any(parts[0])
@@ -56,7 +74,8 @@ def _fmt_user_line(r: dict) -> str:
 
 
 def _is_admin(user_id: int) -> bool:
-    ur = UserRepository()
+    """Проверяет, является ли пользователь администратором"""
+    ur = user_repository
     # Надёжная проверка по БД (без чувствительности к регистру)
     if hasattr(ur, "is_user_admin"):
         try:
@@ -78,11 +97,13 @@ def _is_admin(user_id: int) -> bool:
 # ---- НОВОЕ: парсинг периода для общих отчётов ----
 
 def _format_absence_row(r):
+    """Форматирует одну запись об отсутствии для вывода"""
     emoji = "🏖" if r["absence_type"] == "vacation" else "🤒"
     return f"{emoji} #{r['id']}: {r['date_from']}—{r['date_to']}" + (f" — {r['comment']}" if r.get("comment") else "")
 
 # --- user: vacation ---
 async def vacation_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Добавление отпуска пользователем"""
     user = update.effective_user
     args = context.args or []
     if len(args) < 2:
@@ -101,6 +122,7 @@ async def vacation_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---- НОВОЕ: формат имени в отчётах ----
 def _fmt_user(r: dict) -> str:
+    """Форматирует информацию о пользователе для отчётов"""
     fn = (r.get("first_name") or "").strip()
     ln = (r.get("last_name") or "").strip()
     un = (r.get("tg_username") or "").strip()
@@ -116,10 +138,15 @@ def _fmt_user(r: dict) -> str:
 
 # ---- НОВОЕ: безопасная отправка длинных списков ----
 
+async def help_vacations_short_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Короткая справка по отпускам."""
+    await update.message.reply_text(HELP_VACATIONS_SHORT, parse_mode="HTML")
+
 
 # ===== ХЕЛПЕРЫ ДЛЯ АДМИН-ОТЧЁТОВ =====
 
 def _parse_period(args):
+    """Парсит период из аргументов команды"""
     today = date.today()
     if len(args) >= 2:
         d1 = datetime.strptime(args[0], "%Y-%m-%d").date()
@@ -134,6 +161,7 @@ def _parse_period(args):
     return first, last
 
 async def _send_chunked(update: Update, lines: list[str], parse_mode: str | None = None):
+    """Отправляет длинные сообщения частями для обхода ограничения длины Telegram"""
     buf = ""
     for ln in lines:
         if len(buf) + len(ln) + 1 > 3500:
@@ -145,7 +173,8 @@ async def _send_chunked(update: Update, lines: list[str], parse_mode: str | None
         await update.message.reply_text(buf, parse_mode=parse_mode)
 
 def _fetch_user_public(uid: int) -> dict:
-    ur = UserRepository()
+    """Получает публичную информацию о пользователе из базы данных"""
+    ur = user_repository
     user_obj = None
     for meth in ("get_user_by_id", "get_user", "load_user", "get_user_profile", "find_by_id", "get"):
         if hasattr(ur, meth):
@@ -172,47 +201,140 @@ def _fetch_user_public(uid: int) -> dict:
     }
 
 def _fmt_user_line_by_uid(uid: int) -> str:
+    """Форматирует строку с информацией о пользователе по его ID"""
     up = _fetch_user_public(uid)
     name = f"{up['first_name']} {up['last_name']}".strip()
     handle = f" 🔗 @{up['username']}" if up['username'] else ""
     left = name if name else f"user_id={uid}"
     return "👤 " + left + handle
 
-# --- admin: list all vacations by period ---
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+def _parse_vacations_all_args(args: list[str]) -> tuple[date, date, dict]:
+    """
+    Разбор аргументов /vacations_all.
+    Возвращает (d_from, d_to, filters) где filters может содержать:
+      - 'user_id': int
+      - 'username': str (без @)
+      - 'user_ids': list[int] (для тайм-группы)
+    Правила:
+      * Если переданы две даты в начале — используем как период.
+      * Далее допускается один из фильтров: @username | <user_id> | <group_key>.
+      * Если даты не указаны — берём весь текущий год.
+    """
+    today = date.today()
+    d_from = date(today.year, 1, 1)
+    d_to   = date(today.year, 12, 31)
+    filters: dict = {}
+
+    tokens = list(args or [])
+    # Период (две даты первым и вторым токеном)
+    if len(tokens) >= 2 and _DATE_RE.match(tokens[0]) and _DATE_RE.match(tokens[1]):
+        d_from = datetime.strptime(tokens[0], "%Y-%m-%d").date()
+        d_to   = datetime.strptime(tokens[1], "%Y-%m-%d").date()
+        if d_from > d_to:
+            d_from, d_to = d_to, d_from
+        tokens = tokens[2:]
+
+    if tokens:
+        t = tokens[0].strip()
+        if t.startswith("@"):
+            filters["username"] = t.lstrip("@")
+        elif t.isdigit():
+            filters["user_id"] = int(t)
+        else:
+            # считаем это ключом тайм-группы
+            gi = time_repo.get_group_info(t)
+            if gi:
+                filters["user_ids"] = [int(m["user_id"]) for m in (gi.get("members") or []) if m.get("user_id")]
+    return d_from, d_to, filters
+
+# --- admin: list all vacations by period (HTML + joined users, no t.me preview) ---
 async def vacations_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает все отпуска за период с HTML-разметкой.
+       Формат:
+       🏖 <b>Отпуска</b> (YYYY-MM-DD..YYYY-MM-DD)
+       • YYYY-MM-DD…YYYY-MM-DD — 🆔 <b>ID</b>
+       👤 Имя Фамилия 🔗 @username — <b>отпуск</b> — <i>комментарий</i>
+    """
     caller = update.effective_user
     if not _is_admin(caller.id):
         await update.message.reply_text("⛔ Только для админов.")
         return
-    d_from, d_to = _parse_period(context.args or [])
-    rows = list_absences(user_id=None, absence_type="vacation", from_date=d_from, to_date=d_to)
+
+    # Поддержка периода и фильтров: /vacations_all [YYYY-MM-DD YYYY-MM-DD] [@username|user_id|group_key]
+    d_from, d_to, filters = _parse_vacations_all_args(context.args or [])
+
+    rows = list_absences_with_users(
+        absence_type="vacation",
+        from_date=d_from,
+        to_date=d_to,
+        only_active=True,
+    )
+
+    # Применяем фильтры по пользователю/группе при необходимости
+    if rows and filters:
+        if "user_id" in filters:
+            uid_target = int(filters["user_id"])
+            rows = [r for r in rows if int(r.get("user_id", 0)) == uid_target]
+        elif "username" in filters:
+            u_target = str(filters["username"]).lstrip("@").lower()
+            rows = [r for r in rows if str(r.get("username", "")).lstrip("@").lower() == u_target]
+        elif "user_ids" in filters:
+            uid_set = {int(x) for x in filters["user_ids"]}
+            rows = [r for r in rows if int(r.get("user_id", 0)) in uid_set]
+
     if not rows:
-        await update.message.reply_text(f"Отпусков не найдено в период {d_from:%Y-%m-%d}..{d_to:%Y-%m-%d}.")
-        return
-    head = f"🏖 <b>Отпуска</b> ({d_from:%Y-%m-%d}..{d_to:%Y-%m-%d})"
-    lines = [head]
-    for r in rows:
-        uid = int(r["user_id"])
-        user_line = _fmt_user_line_by_uid(uid)
-        note = (r.get("comment") or "").strip()
-        note_part = f" — <i>{note}</i>" if note and note.lower() not in {"отпуск"} else ""
-        lines.append(
-            f"• {r['date_from']:%Y-%m-%d}…{r['date_to']:%Y-%m-%d} — 🆔 {uid}\n"
-            f"{user_line} — отпуск{note_part}"
+        await update.message.reply_text(
+            f"🏖 <b>Отпуска</b> ({d_from:%Y-%m-%d}..{d_to:%Y-%m-%d})\n— Нет записей.",
+            parse_mode="HTML",
         )
+        return
+
+    lines = [f"🏖 <b>Отпуска</b> ({d_from:%Y-%m-%d}..{d_to:%Y-%m-%d})"]
+
+    for r in rows:
+        absence_id = int(r["id"])
+        uid = int(r["user_id"])
+
+        first_name = (r.get("first_name") or "").strip()
+        last_name  = (r.get("last_name") or "").strip()
+        username   = (r.get("username") or "").strip().lstrip("@")
+
+        fio = " ".join(x for x in [first_name, last_name] if x).strip()
+        left = escape(fio, quote=False) if fio else f"user_id=<code>{uid}</code>"
+
+        if username:
+            uname_html = f"@{escape(username, quote=False)}"  # текстом, без ссылки
+            user_line = f"👤 {left} 🔗 {uname_html}"
+        else:
+            user_line = f"👤 {left}"
+
+        note = (r.get("comment") or "").strip()
+        note_part = f" — <i>{escape(note, quote=False)}</i>" if note and note.lower() != "отпуск" else ""
+
+        lines.append(f"• {r['date_from']:%Y-%m-%d}…{r['date_to']:%Y-%m-%d} — 🆔 <code>{absence_id}</code>")
+        lines.append(f"{user_line} — <b>отпуск</b>{note_part}")
+
     await _send_chunked(update, lines, parse_mode="HTML")
+    await help_vacations_short_command(update, context)
+
 
 # --- admin: list all sick leaves by period ---
 
 async def vacation_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает отпуска текущего пользователя"""
     user = update.effective_user
     rows = list_absences(user_id=user.id, absence_type="vacation")
     if not rows:
         await update.message.reply_text("Пока нет записей об отпуске.")
+        await help_vacations_short_command(update, context)
         return
     await update.message.reply_text("Ваши отпуска:\n" + "\n".join(_format_absence_row(r) for r in rows[:50]))
+    await help_vacations_short_command(update, context)
 
 async def vacation_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Редактирование отпуска пользователем"""
     user = update.effective_user
     args = context.args or []
     if len(args) < 3:
@@ -228,6 +350,7 @@ async def vacation_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Ошибка. Формат: /vacation_edit <id> YYYY-MM-DD YYYY-MM-DD [комментарий]")
 
 async def vacation_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удаление отпуска пользователем"""
     user = update.effective_user
     args = context.args or []
     if len(args) != 1:
@@ -242,6 +365,7 @@ async def vacation_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- user: sick ---
 async def sick_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Добавление больничного пользователем"""
     user = update.effective_user
     args = context.args or []
     if len(args) < 2:
@@ -257,6 +381,7 @@ async def sick_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Ошибка парсинга даты. Формат YYYY-MM-DD.")
 
 async def sick_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает больничные текущего пользователя"""
     user = update.effective_user
     rows = list_absences(user_id=user.id, absence_type="sick")
     if not rows:
@@ -265,6 +390,7 @@ async def sick_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Ваши больничные:\n" + "\n".join(_format_absence_row(r) for r in rows[:50]))
 
 async def sick_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Редактирование больничного пользователем"""
     user = update.effective_user
     args = context.args or []
     if len(args) < 3:
@@ -280,6 +406,7 @@ async def sick_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Ошибка. Формат: /sick_edit <id> YYYY-MM-DD YYYY-MM-DD [комментарий]")
 
 async def sick_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удаление больничного пользователем"""
     user = update.effective_user
     args = context.args or []
     if len(args) != 1:
@@ -294,6 +421,7 @@ async def sick_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- admin: vacation ---
 async def admin_vacation_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Добавление отпуска администратором для любого пользователя"""
     caller = update.effective_user
     if not _is_admin(caller.id):
         await update.message.reply_text("⛔ Только для админов.")
@@ -312,6 +440,7 @@ async def admin_vacation_add(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(f"❌ Ошибка: {e}\nФормат: /admin_vacation_add <user_id> YYYY-MM-DD YYYY-MM-DD [комментарий]")
 
 async def admin_vacation_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Редактирование отпуска администратором"""
     caller = update.effective_user
     if not _is_admin(caller.id):
         await update.message.reply_text("⛔ Только для админов.")
@@ -330,6 +459,7 @@ async def admin_vacation_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("❌ Ошибка. Формат: /admin_vacation_edit <id> YYYY-MM-DD YYYY-MM-DD [комментарий]")
 
 async def admin_vacation_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удаление отпуска администратором"""
     caller = update.effective_user
     if not _is_admin(caller.id):
         await update.message.reply_text("⛔ Только для админов.")
@@ -347,6 +477,7 @@ async def admin_vacation_del(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # --- admin: sick ---
 async def admin_sick_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Добавление больничного администратором для любого пользователя"""
     caller = update.effective_user
     if not _is_admin(caller.id):
         await update.message.reply_text("⛔ Только для админов.")
@@ -365,6 +496,7 @@ async def admin_sick_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {e}\nФормат: /admin_sick_add <user_id> YYYY-MM-DD YYYY-MM-DD [комментарий]")
 
 async def admin_sick_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Редактирование больничного администратором"""
     caller = update.effective_user
     if not _is_admin(caller.id):
         await update.message.reply_text("⛔ Только для админов.")
@@ -383,6 +515,7 @@ async def admin_sick_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Ошибка. Формат: /admin_sick_edit <id> YYYY-MM-DD YYYY-MM-DD [комментарий]")
 
 async def admin_sick_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удаление больничного администратором"""
     caller = update.effective_user
     if not _is_admin(caller.id):
         await update.message.reply_text("⛔ Только для админов.")
@@ -398,107 +531,59 @@ async def admin_sick_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await update.message.reply_text("❌ Ошибка. Формат: /admin_sick_del <id>")
 
-# -------- НОВОЕ: отчёты по всем сотрудникам --------
-
-# --- admin: list all vacations by period ---
-async def vacations_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    caller = update.effective_user
-    if not _is_admin(caller.id):
-        await update.message.reply_text("⛔ Только для админов.")
-        return
-
-    d_from, d_to = _parse_period(context.args or [])
-    rows = list_absences(user_id=None, absence_type="vacation", from_date=d_from, to_date=d_to)
-    if not rows:
-        await update.message.reply_text(f"Отпусков не найдено в период {d_from:%Y-%m-%d}..{d_to:%Y-%m-%d}.")
-        return
-
-    head = f"🏖 <b>Отпуска</b> ({d_from:%Y-%m-%d}..{d_to:%Y-%m-%d})"
-    lines = [head]
-    for r in rows:
-        uid = int(r["user_id"])
-        user_line = _fmt_user_line_by_uid(uid)
-        note = (r.get("comment") or "").strip()
-        # не дублируем слово "отпуск", если оно совпадает с комментарием
-        note_part = f" — <i>{note}</i>" if note and note.lower() not in {"отпуск"} else ""
-        item = (
-            f"• {r['date_from']:%Y-%m-%d}…{r['date_to']:%Y-%m-%d} — 🆔 {uid}\n"
-            f"{user_line} — отпуск{note_part}"
-        )
-        lines.append(item)
-
-    await _send_chunked(update, lines, parse_mode="HTML")
-
-
-# --- admin: list all sick leaves by period ---
 async def sick_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Больничные за период с HTML-разметкой и ФИО/username из БД.
+       Формат:
+       🤒 <b>Больничные</b> (YYYY-MM-DD..YYYY-MM-DD)
+       • YYYY-MM-DD…YYYY-MM-DD — 🆔 <b>ID</b>
+       👤 Имя Фамилия 🔗 <a href="https://t.me/username">@username</a> — <b>больничный</b> — <i>комментарий</i>
+    """
     caller = update.effective_user
     if not _is_admin(caller.id):
         await update.message.reply_text("⛔ Только для админов.")
         return
+
     d_from, d_to = _parse_period(context.args or [])
-    rows = list_absences(user_id=None, absence_type="sick", from_date=d_from, to_date=d_to)
-    if not rows:
-        await update.message.reply_text(f"Больничных не найдено в период {d_from:%Y-%m-%d}..{d_to:%Y-%m-%d}.")
-        return
-    head = f"🤒 <b>Больничные</b> ({d_from:%Y-%m-%d}..{d_to:%Y-%m-%d})"
-    lines = [head]
-    for r in rows:
-        uid = int(r["user_id"])
-        user_line = _fmt_user_line_by_uid(uid)
-        note = (r.get("comment") or "").strip()
-        note_part = f" — <i>{note}</i>" if note and note.lower() not in {"больничный"} else ""
-        lines.append(
-            f"• {r['date_from']:%Y-%m-%d}…{r['date_to']:%Y-%m-%d} — 🆔 {uid}\n"
-            f"{user_line} — больничный{note_part}"
-        )
-    await _send_chunked(update, lines, parse_mode="HTML")
-
-# --- admin: vacations aggregated ---
-async def vacations_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    caller = update.effective_user
-    if not _is_admin(caller.id):
-        await update.message.reply_text("⛔ Только для админов.")
-        return
-
-    # Диапазон: по умолчанию текущий месяц; можно передать 2 даты: YYYY-MM-DD YYYY-MM-DD
-    today = date.today()
-    if context.args and len(context.args) >= 2:
-        try:
-            d_from, d_to = _parse_dates(context.args[:2])
-        except Exception:
-            await update.message.reply_text("❌ Формат: /vacations_all [YYYY-MM-DD YYYY-MM-DD]")
-            return
-    else:
-        first = today.replace(day=1)
-        # последний день месяца: 1-е след. месяца минус день
-        if first.month == 12:
-            next_month_first = first.replace(year=first.year + 1, month=1)
-        else:
-            next_month_first = first.replace(month=first.month + 1)
-        d_from, d_to = first, next_month_first - timedelta(days=1)
 
     rows = list_absences_with_users(
-        absence_type="vacation",
+        absence_type="sick",
         from_date=d_from,
         to_date=d_to,
         only_active=True,
     )
+
     if not rows:
-        await update.message.reply_text(f"🏖 Отпуска ({d_from}..{d_to})\n— Нет записей.")
+        await update.message.reply_text(
+            f"🤒 <b>Больничные</b> ({d_from:%Y-%m-%d}..{d_to:%Y-%m-%d})\n— Нет записей.",
+            parse_mode="HTML",
+        )
         return
 
-    lines = [f"🏖 Отпуска ({d_from}..{d_to})"]
-    for r in rows:
-        uname = f"@{r['username']}" if r.get("username") else "—"
-        fio = " ".join(filter(None, [r.get("first_name"), r.get("last_name")])).strip()
-        if not fio:
-            fio = f"user_id={r['user_id']}"
-        comment_part = f" — {r['comment']}" if r.get("comment") else ""
-        lines.append(
-            f"• {r['date_from']}…{r['date_to']} — 🆔 {r['user_id']}\n"
-            f"👤 {fio} 🔗 {uname} — отпуск{comment_part}"
-        )
+    lines = [f"🤒 <b>Больничные</b> ({d_from:%Y-%m-%d}..{d_to:%Y-%m-%d})"]
 
-    await update.message.reply_text("\n".join(lines[:1200]))  # простая защита от очень длинных сообщений
-from database.absence_repository import list_absences_with_users
+    for r in rows:
+        absence_id = int(r["id"])
+        uid = int(r["user_id"])
+
+        # ФИО / username из join-а
+        first_name = (r.get("first_name") or "").strip()
+        last_name  = (r.get("last_name") or "").strip()
+        username   = (r.get("username") or "").strip().lstrip("@")
+
+        fio = " ".join(x for x in [first_name, last_name] if x).strip()
+        left = escape(fio, quote=False) if fio else f"user_id=<code>{uid}</code>"
+
+        if username:
+            uname_html = f"@{escape(username, quote=False)}"
+            user_line = f"👤 {left} 🔗 {uname_html}"
+        else:
+            user_line = f"👤 {left}"
+
+        note = (r.get("comment") or "").strip()
+        note_part = f" — <i>{escape(note, quote=False)}</i>" if note and note.lower() != "больничный" else ""
+
+        lines.append(f"• {r['date_from']:%Y-%m-%d}…{r['date_to']:%Y-%m-%d} — 🆔 <code>{absence_id}</code>")
+        lines.append(f"{user_line} — <b>больничный</b>{note_part}")
+
+    await _send_chunked(update, lines, parse_mode="HTML")
+
