@@ -465,76 +465,74 @@ HELP_RANK_ROTATION_FULL = """
 """.strip()
 HELP_DUTIES_SHORT = '''
 <b>Доступные команды</b>
-➡️ /duties_catalog [поиск] — список обязанностей
-➡️ /duty_import — загрузить каталог из CSV
-➡️ /duty_export — выгрузить каталог в CSV
 
-➤ <code>/duty_show</code> <i>key</i> — карточка одной обязанности
-➤ /duties_all [<code>YYYY-MM-DD</code>] [group_key] — назначения на дату (по умолчанию сегодня)
-➤ /duties_now [group_key] — назначения прямо сейчас (по сотрудникам; пустые группы в конце)
-➤ /who_on_shift_now [group_key] — кто сейчас в смене
+📚 <b>Каталог</b>
+➡️ /duties_catalog [поиск] — список обязанностей  
+➡️ /duty_import — загрузить каталог из CSV  
+➡️ /duty_export — выгрузить каталог в CSV  
+➡️ <code>/duty_show</code> <i>key</i> — карточка одной обязанности  
 
-➤ /assign_duties — авторспределение «по справедливости» (история за 30 дней)
-➤ /assign_duties_rr — авторспределение Round-Robin на дату
-➤ /assign_duties_now [group_key] — RR-распределение «на сейчас» (учёт слотов/окон)
-➤ /assignw &lt;YYYY-MM-DD&gt; [group_key] — весовое распределение на дату (вес задач и ранги)
-➤ /assignw_now — глобальное весовое распределение «на сейчас»
-➤ /assignw_recon — перерасстановка «на сейчас» при изменении состава смены
-➤ /duties_reset_today [group_key] — сбросить сегодняшние назначения (админ)
+📅 <b>Просмотр назначений</b>
+➤ /duties_all [YYYY-MM-DD] [group_key] — назначения на дату (по умолчанию сегодня)  
+➤ /duties_now [group_key] — назначения прямо сейчас (по сотрудникам)  
+➤ /who_on_shift_now [group_key] — кто сейчас в смене  
 
-➤ /rank_list — ранги участников по группам
-➤ <code>/rank_set</code> <i>group_key</i> <i>user_id</i> <i>rank(1..3)</i>
+⚙️ <b>Автораспределение</b>
+➤ /assign_duties — справедливое (история 30 дней)  
+➤ /assign_duties_rr — Round-Robin на дату  
+➤ /assign_duties_now [group_key] — Round-Robin «на сейчас» (учёт слотов)  
+➤ /assignw &lt;YYYY-MM-DD&gt; [group_key] — весовое распределение (вес, ранг)  
+➤ /assignw_now — глобальное весовое «на сейчас»  
+➤ /assignw_recon — перерасстановка при изменении состава смены  
 
-➤ /my_duties [дата] — мои назначения на дату
+🗑️ /duties_reset_today [group_key] — сброс назначений за сегодня (админ)  
+
+🏅 <b>Ранги</b>
+➤ /rank_list — ранги участников  
+➤ <code>/rank_set</code> <i>group_key user_id rank(1..3)</i>  
+
+👤 <b>Личные</b>
+➤ /my_duties [дата] — мои назначения  
 ➤ /my_duties_next — ближайшие мои назначения
 '''.strip()
-
 HELP_DUTIES_FULL = '''
 🧩 <b>Обязанности</b>
 
 <b>Каталог</b>
-➤ /duties_catalog [поиск] — список из каталога (вес, min/target ранг и пр.)
-➤ <code>/duty_show</code> <i>key</i> — подробная карточка обязанности
-➤ /duty_import — загрузить каталог из CSV
-➤ /duty_export — выгрузить каталог в CSV
-Формат CSV: <code>key,title,weight,office_required,target_rank,min_rank,description</code>
-Примечания:
-— <code>office_required</code>: 1/0, yes/no, true/false, да/нет
-— <code>target_rank/min_rank</code>: целые числа или пусто
+➤ /duties_catalog [поиск] — список из каталога (вес, min/target ранг и т.п.)  
+➤ <code>/duty_show</code> <i>key</i> — подробная карточка  
+➤ /duty_import — загрузить каталог из CSV  
+➤ /duty_export — выгрузить каталог в CSV  
+Формат CSV: <code>key,title,weight,office_required,target_rank,min_rank,description</code>  
 
 <b>Просмотр назначений</b>
-➤ /duties_all [<code>YYYY-MM-DD</code>] [group_key] — показать назначения на дату (по умолчанию сегодня; можно отфильтровать по группе)
-➤ /duties_now [group_key] — показать назначения прямо сейчас (по сотрудникам; группы без смены выводятся отдельно)
-➤ /who_on_shift_now [group_key] — кто сейчас реально в смене (учёт слотов/окон)
+➤ /duties_all [YYYY-MM-DD] [group_key] — показать назначения на дату  
+➤ /duties_now [group_key] — показать назначения прямо сейчас (по сотрудникам)  
+➤ /who_on_shift_now [group_key] — кто сейчас реально в смене  
 
 <b>Автораспределение</b>
-➤ /assign_duties — «справедливое» распределение по истории за последние 30 дней
-➤ /assign_duties_rr — алгоритм Round-Robin по каждому duty (на дату)
-➤ /assign_duties_now [group_key] — Round-Robin «на сейчас» (учёт текущих слотов и окон)
-➤ /assignw &lt;YYYY-MM-DD&gt; [group_key] — весовое распределение обязанностей на дату (учёт веса задач и рангов; min_rank строго)
-➤ /assignw_now — глобальное весовое распределение «на сейчас» (одна задача → один исполнитель)
-➤ /assignw_recon — перерасстановка «на сейчас» (оставить задачи у оставшихся, снять с ушедших, перекинуть свободные на текущих)
+➤ /assign_duties — «справедливое» по истории 30 дней  
+➤ /assign_duties_rr — Round-Robin на дату  
+➤ /assign_duties_now [group_key] — Round-Robin «на сейчас» (учёт слотов и окон)  
+➤ /assignw &lt;YYYY-MM-DD&gt; [group_key] — весовое распределение (учёт весов и рангов)  
+➤ /assignw_now — глобальное весовое распределение «на сейчас»  
+➤ /assignw_recon — перерасстановка «на сейчас» (оставить активных, снять ушедших, перекинуть свободные)
 
-<b>Сброс назначений</b>
-➤ /duties_reset_today [group_key] — удалить все назначения за сегодня (по всем или указанной группе) — <i>админ</i>
+<b>Сброс</b>
+➤ /duties_reset_today [group_key] — удалить назначения за сегодня (админ)
 
 <b>Ранги</b>
-➤ /rank_list — показать текущие ранги участников по группам
-➤ <code>/rank_set</code> <i>group_key</i> <i>user_id</i> <i>rank(1..3)</i> — 1=leader, 2=specialist, 3=junior
+➤ /rank_list — показать текущие ранги  
+➤ <code>/rank_set</code> <i>group_key user_id rank(1..3)</i> — 1 = leader, 2 = specialist, 3 = junior  
 
-<b>Мои назначения</b>
-➤ /my_duties [дата] — мои назначения (по умолчанию сегодня; поддерживается <code>DD.MM[.YYYY]</code> или <code>YYYY-MM-DD</code>)
-➤ /my_duties_next — ближайшие мои назначения
+<b>Личные</b>
+➤ /my_duties [дата] — мои назначения (поддерживает DD.MM[.YYYY] или YYYY-MM-DD)  
+➤ /my_duties_next — ближайшие мои назначения  
 
 <b>Регламент для админов</b>
-1) 🕗 <b>Начало смены</b> — <code>/assignw_now</code>  
-   Создать назначения «на сейчас», с балансировкой по весам и строгим учётом min_rank.  
-
-2) 🔄 <b>Если состав смены изменился</b> — <code>/assignw_recon</code>  
-   Оставить задачи у оставшихся, снять с ушедших, свободные перекинуть на текущих сотрудников.  
-
-3) 📊 <b>Для отчётов</b> — <code>/duties_all [YYYY-MM-DD]</code>  
-   Показать фактический список назначений из БД.
+1️⃣ 🕗 Начало смены — <code>/assignw_now</code> → создать назначения «на сейчас».  
+2️⃣ 🔄 Изменился состав смены — <code>/assignw_recon</code> → обновить активных.  
+3️⃣ 📊 Для отчётов — <code>/duties_all [YYYY-MM-DD]</code> → показать список назначений.
 '''.strip()
 
 
