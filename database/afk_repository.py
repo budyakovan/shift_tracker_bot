@@ -6,34 +6,15 @@ from zoneinfo import ZoneInfo
 from typing import Set, Dict, List, Optional, Any
 from datetime import datetime, timedelta
 
-# ВАЖНО: duty_repository больше не используем!
-# from database import duty_repository as duty_repo   # ← удалить
-
 from .connection import db_connection
 from database import time_repository as time_repo
+from database import duty_repository as duty_repo
 
-# Совместимость: активные «на смене» теперь берём из shift_repository
+# (опц.) отсутствие/больничный: спокойно деградируем если модуля нет
 try:
-    from database.shift_repository import (
-        get_on_duty_members_now as _get_on_duty_members_now,
-        get_on_shift_now as _get_on_shift_now,
-        is_on_shift_now as _is_on_shift_now,
-    )
+    from database.absence_repository import get_absence_on_date as _get_absence_on_date
 except Exception:
-    def _get_on_duty_members_now(*args, **kwargs): return []
-    def _get_on_shift_now(*args, **kwargs): return []
-    def _is_on_shift_now(*args, **kwargs): return False
-
-# Опциональные функции перераспределения/сверки (если у тебя они были в duty_repository):
-# даём безопасные заглушки, чтобы код стартовал даже без них
-try:
-    from database.assign_repository import (  # если такого модуля нет — перейдём на заглушки ниже
-        auto_assign_weighted_global_now as _auto_assign_weighted_global_now,
-        reconcile_weighted_global_now as _reconcile_weighted_global_now,
-    )
-except Exception:
-    def _auto_assign_weighted_global_now(*args, **kwargs): return 0
-    def _reconcile_weighted_global_now(*args, **kwargs): return {"kept": 0, "reassigned": 0, "skipped": 0}
+    _get_absence_on_date = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 MSK = ZoneInfo("Europe/Moscow")
@@ -60,11 +41,13 @@ def set_afk(user_id: int,
         """, (user_id, started_at, until_at, reason, chat_id, message_id))
         db_connection.get_connection().commit()
 
+
 def clear_afk(user_id: int) -> bool:
     with db_connection.get_connection().cursor() as cur:
         cur.execute("DELETE FROM user_afk WHERE user_id=%s", (user_id,))
         db_connection.get_connection().commit()
         return cur.rowcount > 0
+
 
 def get_afk(user_id: int) -> Optional[Dict[str, Any]]:
     with db_connection.get_connection().cursor() as cur:
@@ -73,32 +56,34 @@ def get_afk(user_id: int) -> Optional[Dict[str, Any]]:
             FROM user_afk WHERE user_id=%s
         """, (user_id,))
         r = cur.fetchone()
-    if not r: return None
+    if not r:
+        return None
     return {
         "user_id": r[0], "started_at": r[1], "until_at": r[2],
         "reason": r[3], "chat_id": r[4], "message_id": r[5]
     }
 
+
 def get_afk_active(now: Optional[datetime] = None) -> List[Dict[str, Any]]:
     now = now or datetime.utcnow()
     with db_connection.get_connection().cursor() as cur:
         cur.execute("""
-            SELECT user_id, started_at, until_at, reason FROM user_afk
+            SELECT user_id, started_at, until_at, reason
+            FROM user_afk
             WHERE until_at IS NULL OR until_at > %s
         """, (now,))
         rows = cur.fetchall()
     return [{"user_id": r[0], "started_at": r[1], "until_at": r[2], "reason": r[3]} for r in rows]
+
 
 def _today_local(now_local: Optional[datetime]) -> datetime.date:
     if not isinstance(now_local, datetime):
         now_local = datetime.now(MSK)
     return now_local.astimezone(MSK).date()
 
+
 def get_afk_user_ids(now: Optional[datetime] = None) -> Set[int]:
-    """
-    Множество user_id, которые ПРЯМО СЕЙЧАС AFK.
-    Базируется на user_afk: until_at IS NULL или until_at > now.
-    """
+    """ user_id, которые ПРЯМО СЕЙЧАС AFK. """
     ids: Set[int] = set()
     try:
         for r in (get_afk_active(now) or []):
@@ -113,6 +98,7 @@ def get_afk_user_ids(now: Optional[datetime] = None) -> Set[int]:
         logger.exception("get_afk_user_ids failed")
     return ids
 
+
 def _is_absent_safe(user_id: int, on_date: datetime.date) -> bool:
     """ Отсутствие по отпуску/больничному (если модуль есть). """
     if _get_absence_on_date is None:
@@ -122,10 +108,9 @@ def _is_absent_safe(user_id: int, on_date: datetime.date) -> bool:
     except Exception:
         return False
 
+
 def _build_assigned_count(on_date: datetime.date, group_key: Optional[str] = None) -> Dict[int, int]:
-    """
-    Кому сколько назначено на дату (опционально по группе).
-    """
+    """ Кому сколько назначено на дату (опц. по группе). """
     counts: Dict[int, int] = {}
     try:
         rows = duty_repo.get_assignments(on_date, group_key) or []
@@ -142,10 +127,9 @@ def _build_assigned_count(on_date: datetime.date, group_key: Optional[str] = Non
         logger.exception("_build_assigned_count failed")
     return counts
 
+
 def _duty_ref_from_row(row: dict) -> Optional[str]:
-    """
-    Ключ для переназначения: short_code > code > id.
-    """
+    """ Ключ переназначения: short_code > code > id. """
     sc = (row.get("short_code") or "").strip()
     if sc:
         return sc
@@ -155,15 +139,15 @@ def _duty_ref_from_row(row: dict) -> Optional[str]:
     i = row.get("id")
     return str(i) if i is not None else None
 
+
 def _on_duty_active_members(group_key: str, now_local: Optional[datetime]) -> List[dict]:
-    """
-    Те, кто СЕЙЧАС в смене по группе и не AFK, и не в отпуске/больничном.
-    """
+    """ Те, кто СЕЙЧАС в смене по группе и не AFK/не отсутствует. """
     if not isinstance(now_local, datetime):
         now_local = datetime.now(MSK)
     today = _today_local(now_local)
     afk_ids = get_afk_user_ids(now_local)
 
+    # ВАЖНО: используем проверенный duty_repository
     try:
         members = duty_repo.get_on_duty_members_now(str(group_key), now_local) or []
     except TypeError:
@@ -182,16 +166,15 @@ def _on_duty_active_members(group_key: str, now_local: Optional[datetime]) -> Li
         good.append(m)
     return good
 
+
 def reassign_away_from_afk_now(now_local: datetime,
                                author_id: Optional[int] = None,
                                allow_global_fallback: bool = True) -> Dict[str, int]:
     """
-    Перераздача обязанностей «прямо сейчас» с учётом AFK/отсутствий.
-    1) Пытаемся переназначить внутри исходной группы.
-    2) Если в группе нет кандидатов — и если allow_global_fallback=True —
-       ищем кандидата среди всех, кто сейчас в смене (глобально).
-    Кандидат = в смене сейчас, не AFK, не в отпуске/БЛ. Выбор по минимальному числу задач на сегодня.
-    Возвращает: {'kept': X, 'reassigned': Y, 'skipped': Z}
+    Перераздача «прямо сейчас» с учётом AFK/отсутствий.
+    1) Пытаемся внутри исходной группы.
+    2) Если никого — ищем по всем группам (если allow_global_fallback=True).
+    Баланс: выбираем кандидата с минимальным количеством задач на сегодня.
     """
     stats = {"kept": 0, "reassigned": 0, "skipped": 0}
 
@@ -206,13 +189,11 @@ def reassign_away_from_afk_now(now_local: datetime,
         total_assignments = 0
         total_reassigned = 0
 
-        # Заготовим общий счётчик задач на сегодня (для глобального фолбэка)
         counts_all = _build_assigned_count(today, group_key=None)
 
         for g in groups:
             gkey = str(g.get("key"))
 
-            # Кандидаты в ЭТОЙ группе
             group_candidates = _on_duty_active_members(gkey, now_local)
             group_candidate_uids: List[int] = []
             for m in group_candidates:
@@ -222,14 +203,11 @@ def reassign_away_from_afk_now(now_local: datetime,
                     continue
             group_candidate_uids = [u for u in group_candidate_uids if u]
 
-            # Назначения в группе на сегодня
             rows = duty_repo.get_assignments(today, gkey) or []
             if not rows:
                 continue
 
             total_assignments += len(rows)
-
-            # Счётчик задач в рамках группы — для локального выбора
             counts_group = _build_assigned_count(today, gkey)
 
             for r in rows:
@@ -251,12 +229,10 @@ def reassign_away_from_afk_now(now_local: datetime,
 
                 # 1) пробуем в своей группе
                 candidate_uids = [u for u in group_candidate_uids if u != uid]
+                choose_counts = counts_group
 
-                choose_counts = counts_group  # по умолчанию локальная балансировка
-
-                # 2) если в группе никого — глобальный фолбэк
+                # 2) если никого — глобальный фолбэк
                 if not candidate_uids and allow_global_fallback:
-                    # соберём всех активных по всем группам
                     global_uids: List[int] = []
                     try:
                         for gg in (time_repo.list_groups() or []):
@@ -270,17 +246,14 @@ def reassign_away_from_afk_now(now_local: datetime,
                                     global_uids.append(u)
                     except Exception:
                         pass
-                    # исключим AFK/отсутствующих на сегодня (на всякий случай)
                     candidate_uids = [u for u in set(global_uids)
                                       if (u not in afk_ids and not _is_absent_safe(u, today))]
-                    # при глобальном фолбэке балансируем по общему числу задач за день
                     choose_counts = counts_all
 
                 if not candidate_uids:
                     stats["skipped"] += 1
                     continue
 
-                # выбираем наименее загруженного кандидата
                 tgt = min(candidate_uids, key=lambda u: choose_counts.get(u, 0))
                 try:
                     ok, _msg = duty_repo.reassign_duty(today, gkey, duty_ref, uid, tgt)
@@ -290,12 +263,9 @@ def reassign_away_from_afk_now(now_local: datetime,
                 if ok:
                     stats["reassigned"] += 1
                     total_reassigned += 1
-                    # обновляем счётчики нагрузки
                     choose_counts[tgt] = choose_counts.get(tgt, 0) + 1
-                    # общий счётчик тоже лучше подвинуть, чтобы глобальный баланс был согласован
                     counts_all[tgt] = counts_all.get(tgt, 0) + 1
                     counts_all[uid] = max(0, counts_all.get(uid, 0) - 1)
-                    # локальный счётчик уменьшаем у старого, если он у нас есть
                     counts_group[uid] = max(0, counts_group.get(uid, 0) - 1)
                 else:
                     stats["skipped"] += 1
@@ -307,10 +277,11 @@ def reassign_away_from_afk_now(now_local: datetime,
         logger.exception("reassign_away_from_afk_now failed")
         return stats
 
+
 def auto_assign_weighted_global_now_afk(now_local: Optional[datetime] = None,
                                         author_id: Optional[int] = None) -> Dict[str, int]:
     """
-    AFK-aware «назначить на сейчас»: базовая логика + добор с учётом AFK.
+    AFK-aware «назначить на сейчас»: штатное назначение + добор с учётом AFK.
     """
     if not isinstance(now_local, datetime):
         now_local = datetime.now(MSK)
@@ -332,6 +303,7 @@ def auto_assign_weighted_global_now_afk(now_local: Optional[datetime] = None,
     for k, v in afk_stats.items():
         out[f"afk_{k}"] = v
     return out
+
 
 def reconcile_weighted_global_now_afk(now_local: Optional[datetime] = None,
                                       author_id: Optional[int] = None) -> Dict[str, int]:

@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict
 
 from telegram import Update, Message
 from telegram.ext import ContextTypes
@@ -17,17 +17,14 @@ from database.afk_repository import (
     set_afk,
     clear_afk,
     get_afk_active,
-    get_afk,                 # ← ДОБАВИТЬ
     reassign_away_from_afk_now,
 )
 
-
 from database import time_repository as time_repo
-from database.shift_repository import get_on_duty_members_now
+from database.duty_repository import get_on_duty_members_now
 import database.users_repository as user_repository
 from database import notif_repository as notif_repo
 from handlers.notif_handlers import notify_group
-
 
 logger = logging.getLogger(__name__)
 MSK = ZoneInfo("Europe/Moscow")
@@ -195,10 +192,7 @@ _EN2RU = str.maketrans({
     'Z':'Я','X':'Ч','C':'С','V':'М','B':'И','N':'Т','M':'Ь','<':'Б','>':'Ю',
 })
 
-
 def _en_to_ru(s: str) -> str: return s.translate(_EN2RU)
-
-
 
 AFK_PATTERNS = re.compile(r"""(?xi)
     (?:^|\b)(отош[её]л|от[оё]йду|уш[её]л
@@ -286,7 +280,6 @@ def _detect_future_intent(text: str, now_local: datetime, min_delta_minutes: int
     except Exception:
         logger.exception("_detect_future_intent failed")
     return None
-
 
 def _parse_duration(text: str, now_local: datetime) -> Optional[int]:
     m = MINUTES_PAT.search(text or "")
@@ -376,8 +369,6 @@ async def cmd_afk(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # Права
-        from database import time_repository as time_repo
-        from database.shift_repository import get_on_duty_members_now
         try:
             from database import users_repository as ur
             is_admin = bool(getattr(ur, "is_user_admin", lambda x: False)(author.id))

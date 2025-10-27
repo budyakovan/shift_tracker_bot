@@ -9,6 +9,25 @@ from config import config
 
 from handlers.start import start_command
 from handlers.common import handle_message, my_id_command
+from handlers.duty_handlers import (
+    assign_duties,       # /assign_duties [YYYY-MM-DD] [group_key]
+    my_duties,           # /my_duties [дата]
+    my_duties_next,      # /my_duties_next
+    duties_now,          # /duties_now [group_key]
+    duties_all,          # /duties_all [YYYY-MM-DD] [group_key]
+)
+
+from handlers.duty_admin_handlers import (
+    rank_set, rank_list,
+    duty_exclude, duty_exclude_del,
+    assign_duties_rr,     # /assign_duties_rr [YYYY-MM-DD] [group_key]
+    assign_duties_now,    # /assign_duties_now [group_key]
+    who_on_shift_now,     # /who_on_shift_now [group_key]
+    who_on_shift_now_debug, # /who_on_shift_now_debug [group_key]
+    # админская версия вывода «сейчас»
+)
+
+
 from handlers.help_handlers import (
     help_command,
     help_users_command,
@@ -84,12 +103,6 @@ from handlers.notif_handlers import (
     admin_notif_list,
     admin_notif_clear,
     admin_notif_ping,
-)
-
-from handlers.shift_handlers import (
-    on_shift_now,      # /on_shift_now [group_key] [--tz=...] [--office] [--include-afk]
-    on_shift_debug,    # /on_shift_debug ...
-    is_on_shift,       # /is_on_shift  [@username|id] [group_key] ...
 )
 
 from tools.duty_import_export_handlers import register_import_export_handlers
@@ -264,6 +277,26 @@ def setup_handlers(application: Application):
     application.add_handler(CommandHandler("admin_notif_clear", admin_notif_clear))
     application.add_handler(CommandHandler("admin_notif_ping", admin_notif_ping))
 
+    # === Пользовательские ===
+    application.add_handler(CommandHandler("my_duties", my_duties))
+    application.add_handler(CommandHandler("my_duties_next", my_duties_next))
+    application.add_handler(CommandHandler("duties_now", duties_now))
+    application.add_handler(CommandHandler("duties_all", duties_all))
+
+    # === Админские ===
+    application.add_handler(CommandHandler("assign_duties", assign_duties))
+    application.add_handler(CommandHandler("assign_duties_rr", assign_duties_rr))
+    application.add_handler(CommandHandler("assign_duties_now", assign_duties_now))
+    application.add_handler(CommandHandler("rank_set", rank_set))
+    application.add_handler(CommandHandler("rank_list", rank_list))
+    application.add_handler(CommandHandler("duty_exclude", duty_exclude))
+    application.add_handler(CommandHandler("duty_exclude_del", duty_exclude_del))
+    application.add_handler(CommandHandler("who_on_shift_now", who_on_shift_now))
+    application.add_handler(CommandHandler("who_on_shift_now_debug", who_on_shift_now_debug))
+    # опц.: отдельный вывод «сейчас» для админов
+    # application.add_handler(CommandHandler("duties_now_admin", duties_now_admin))
+
+
     # ===== Слушатель сообщений в форумных темах супергрупп =====
     # Внутри on_work_topic_message сопоставляем чат+тему с notif_endpoints.
     application.add_handler(
@@ -281,10 +314,6 @@ def setup_handlers(application: Application):
     application.add_error_handler(error_handler)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message), group=1)
 
-    #Дежурства
-    application.add_handler(CommandHandler("on_shift_now", on_shift_now))
-    application.add_handler(CommandHandler("on_shift_debug", on_shift_debug))
-    application.add_handler(CommandHandler("is_on_shift", is_on_shift))
 
 def main():
     """Точка входа"""

@@ -292,13 +292,6 @@ HELP_SICK_SHORT = """
 ➤ <code>/admin_sick_edit</code> <i>&lt;id&gt; YYYY-MM-DD YYYY-MM-DD [комментарий]</i>
 ➤ <code>/admin_sick_del</code> <i>&lt;id&gt;</i>
 """.strip()
-HELP_DUTIES_SHORT = '''
-➡️ /help_duties — справка по обязанностям
-'''.strip()
-HELP_DUTIES_FULL = '''
-🧩 <b>Обязанности</b>
-
-'''.strip()
 HELP_LOCATION_SHORT = """
 ➡️ /help_location — подробная справка
 """.strip()
@@ -470,4 +463,79 @@ HELP_RANK_ROTATION_FULL = """
 • Проверьте, что в нужной группе действительно есть минимум один участник ранга 1 и один ранга 2 в дневном слоте выбранной даты.  
 • Если правило выключено или некорректно заполнено (<i>epoch</i>/<i>period_days</i>), алгоритм переключится на фолбэк без пар.  
 """.strip()
+HELP_DUTIES_SHORT = '''
+<b>Доступные команды</b>
+➡️ /duties_catalog [поиск] — список обязанностей
+➡️ /duty_import — загрузить каталог из CSV
+➡️ /duty_export — выгрузить каталог в CSV
+
+➤ <code>/duty_show</code> <i>key</i> — карточка одной обязанности
+➤ /duties_all [<code>YYYY-MM-DD</code>] [group_key] — назначения на дату (по умолчанию сегодня)
+➤ /duties_now [group_key] — назначения прямо сейчас (по сотрудникам; пустые группы в конце)
+➤ /who_on_shift_now [group_key] — кто сейчас в смене
+
+➤ /assign_duties — авторспределение «по справедливости» (история за 30 дней)
+➤ /assign_duties_rr — авторспределение Round-Robin на дату
+➤ /assign_duties_now [group_key] — RR-распределение «на сейчас» (учёт слотов/окон)
+➤ /assignw &lt;YYYY-MM-DD&gt; [group_key] — весовое распределение на дату (вес задач и ранги)
+➤ /assignw_now — глобальное весовое распределение «на сейчас»
+➤ /assignw_recon — перерасстановка «на сейчас» при изменении состава смены
+➤ /duties_reset_today [group_key] — сбросить сегодняшние назначения (админ)
+
+➤ /rank_list — ранги участников по группам
+➤ <code>/rank_set</code> <i>group_key</i> <i>user_id</i> <i>rank(1..3)</i>
+
+➤ /my_duties [дата] — мои назначения на дату
+➤ /my_duties_next — ближайшие мои назначения
+'''.strip()
+
+HELP_DUTIES_FULL = '''
+🧩 <b>Обязанности</b>
+
+<b>Каталог</b>
+➤ /duties_catalog [поиск] — список из каталога (вес, min/target ранг и пр.)
+➤ <code>/duty_show</code> <i>key</i> — подробная карточка обязанности
+➤ /duty_import — загрузить каталог из CSV
+➤ /duty_export — выгрузить каталог в CSV
+Формат CSV: <code>key,title,weight,office_required,target_rank,min_rank,description</code>
+Примечания:
+— <code>office_required</code>: 1/0, yes/no, true/false, да/нет
+— <code>target_rank/min_rank</code>: целые числа или пусто
+
+<b>Просмотр назначений</b>
+➤ /duties_all [<code>YYYY-MM-DD</code>] [group_key] — показать назначения на дату (по умолчанию сегодня; можно отфильтровать по группе)
+➤ /duties_now [group_key] — показать назначения прямо сейчас (по сотрудникам; группы без смены выводятся отдельно)
+➤ /who_on_shift_now [group_key] — кто сейчас реально в смене (учёт слотов/окон)
+
+<b>Автораспределение</b>
+➤ /assign_duties — «справедливое» распределение по истории за последние 30 дней
+➤ /assign_duties_rr — алгоритм Round-Robin по каждому duty (на дату)
+➤ /assign_duties_now [group_key] — Round-Robin «на сейчас» (учёт текущих слотов и окон)
+➤ /assignw &lt;YYYY-MM-DD&gt; [group_key] — весовое распределение обязанностей на дату (учёт веса задач и рангов; min_rank строго)
+➤ /assignw_now — глобальное весовое распределение «на сейчас» (одна задача → один исполнитель)
+➤ /assignw_recon — перерасстановка «на сейчас» (оставить задачи у оставшихся, снять с ушедших, перекинуть свободные на текущих)
+
+<b>Сброс назначений</b>
+➤ /duties_reset_today [group_key] — удалить все назначения за сегодня (по всем или указанной группе) — <i>админ</i>
+
+<b>Ранги</b>
+➤ /rank_list — показать текущие ранги участников по группам
+➤ <code>/rank_set</code> <i>group_key</i> <i>user_id</i> <i>rank(1..3)</i> — 1=leader, 2=specialist, 3=junior
+
+<b>Мои назначения</b>
+➤ /my_duties [дата] — мои назначения (по умолчанию сегодня; поддерживается <code>DD.MM[.YYYY]</code> или <code>YYYY-MM-DD</code>)
+➤ /my_duties_next — ближайшие мои назначения
+
+<b>Регламент для админов</b>
+1) 🕗 <b>Начало смены</b> — <code>/assignw_now</code>  
+   Создать назначения «на сейчас», с балансировкой по весам и строгим учётом min_rank.  
+
+2) 🔄 <b>Если состав смены изменился</b> — <code>/assignw_recon</code>  
+   Оставить задачи у оставшихся, снять с ушедших, свободные перекинуть на текущих сотрудников.  
+
+3) 📊 <b>Для отчётов</b> — <code>/duties_all [YYYY-MM-DD]</code>  
+   Показать фактический список назначений из БД.
+'''.strip()
+
+
 
