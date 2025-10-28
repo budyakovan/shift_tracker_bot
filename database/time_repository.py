@@ -18,6 +18,7 @@
 import logging
 from datetime import datetime, date as _date_cls, date
 from .connection import db_connection
+from datetime import datetime, date as _date_cls, date, time as dtime, timedelta  # ← ДОБАВИЛИ dtime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,13 @@ try:
     from zoneinfo import ZoneInfo  # py>=3.9
 except Exception:
     ZoneInfo = None
+
+# Единый Moscow TZ для всех расчётов сегментов
+if ZoneInfo:
+    MSK = ZoneInfo("Europe/Moscow")
+else:
+    MSK = None
+
 
 def now_local() -> datetime:
     """
@@ -623,3 +631,73 @@ def list_group_users(group_key: str) -> list[dict]:
                 "pos": int(pos) if pos is not None else 0,
             })
         return res
+
+def _segment_starts_for_city(city: str):
+    city = city.lower()
+    if city == "vrn":   # Воронеж
+        return (dtime(8,0), dtime(20,0))
+    if city == "vdk":   # Владивосток (считаем по MSK)
+        return (dtime(1,0), dtime(13,0))
+    # по умолчанию как VRN
+    return (dtime(8,0), dtime(20,0))
+
+def detect_city_from_group(group_key: str) -> str:
+    g = (group_key or "").lower()
+    if g.startswith("vrn"): return "vrn"
+    if g.startswith("vdk"): return "vdk"
+    # по умолчанию как VRN
+    return "vrn"
+
+def segment_bounds_for_anchor(anchor_dt: datetime, city: str) -> tuple[datetime, datetime]:
+    """Возвращает (segment_start, segment_end), где anchor_dt == segment_start."""
+    t1, t2 = _segment_starts_for_city(city)
+    start = anchor_dt
+    # конец = следующий старт
+    candidates = []
+    for t in (t1, t2):
+        cand = datetime.combine(anchor_dt.date(), t, tzinfo=MSK)
+        if cand > anchor_dt:
+            candidates.append(cand)
+    if not candidates:
+        # следующий день, первый старт
+        candidates = [datetime.combine(anchor_dt.date()+timedelta(days=1), _segment_starts_for_city(city)[0], tzinfo=MSK)]
+    end = min(candidates)
+    # Ночной сегмент может уйти через полночь — это нормально, якорь остаётся на старте
+    return start, end
+
+def next_anchor_after(dt: datetime, group_key: str) -> datetime:
+    """Ближайший будущий якорь (полный сегмент), без хвостов."""
+    city = detect_city_from_group(group_key)
+    t1, t2 = _segment_starts_for_city(city)
+    base = dt.astimezone(MSK).date()
+    candidates = [
+        datetime.combine(base, t1, tzinfo=MSK),
+        datetime.combine(base, t2, tzinfo=MSK),
+        datetime.combine(base+timedelta(days=1), t1, tzinfo=MSK)
+    ]
+    for c in sorted(candidates):
+        if c > dt:
+            return c
+    return datetime.combine(base+timedelta(days=1), t1, tzinfo=MSK)
+
+def anchor_for_datetime(dt: datetime, group_key: str) -> datetime:
+    """Находит старт сегмента, в который попадает dt (может быть сегодня/вчера по часам)."""
+    city = detect_city_from_group(group_key)
+    t1, t2 = _segment_starts_for_city(city)
+    local = dt.astimezone(MSK)
+    day0 = local.date()
+    starts = sorted([
+        datetime.combine(day0, t1, tzinfo=MSK),
+        datetime.combine(day0, t2, tzinfo=MSK),
+        datetime.combine(day0 - timedelta(days=1), t1, tzinfo=MSK),
+        datetime.combine(day0 - timedelta(days=1), t2, tzinfo=MSK),
+        datetime.combine(day0 + timedelta(days=1), t1, tzinfo=MSK),
+    ])
+    chosen = None
+    for i in range(len(starts)-1):
+        if starts[i] <= local < starts[i+1]:
+            chosen = starts[i]
+            break
+    if chosen is None:
+        chosen = starts[-2]  # крайний интервал
+    return chosen

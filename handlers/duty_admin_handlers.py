@@ -405,22 +405,54 @@ async def assignw_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cnt = 0
     await update.message.reply_text(f"✅ Глобальное весовое назначение на сейчас: {cnt} (в {now_local:%Y-%m-%d %H:%M}).")
 
-async def assignw_recon(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def assignw_recon(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    /assignw_recon
-    Сверка ранее назначенных «на сейчас» со свежим планом (исправляет несовпадения).
+    Перерасстановка «на сейчас» при изменении состава / AFK.
+    Поддерживает режимы:
+      /assignw_recon                -> SOFT
+      /assignw_recon family         -> FAMILY
+      /assignw_recon group          -> GROUP
+      /assignw_recon vrn3 123456789 -> для конкретной группы и user_id
     """
-    uid = update.effective_user.id
-    if not _is_admin(uid):
-        await update.message.reply_text("⛔ Только для админов.")
+    args = context.args or []
+    mode = None
+    group_key = None
+    afk_user_id = None
+
+    for a in args:
+        a_low = a.lower()
+        if a_low in ("soft","family","group"):
+            mode = a_low.upper()
+        elif a.isdigit():
+            afk_user_id = int(a)
+        else:
+            group_key = a
+
+    # Если группа не указана — попробуем определить по умолчанию (например, из настроек).
+    if not group_key:
+        group_key = getattr(config, "DEFAULT_GROUP_KEY", None)
+
+    if not group_key:
+        await update.message.reply_text("❗ Укажи group_key (например, vrn3) или настрой DEFAULT_GROUP_KEY в config.py")
         return
-    now_local = datetime.now(ZoneInfo("Europe/Moscow"))
-    try:
-        cnt = reconcile_weighted_global_now(now_local, author_id=uid)
-    except Exception:
-        logger.exception("assignw_recon failed")
-        cnt = 0
-    await update.message.reply_text(f"♻️ Пересведение весовых назначений на сейчас: {cnt} (в {now_local:%Y-%m-%d %H:%M}).")
+
+    # Если user_id не задан — это «общий» рекон: можно пробежаться по списку AFK сейчас.
+    if afk_user_id is None:
+        # У тебя может быть функция get_afk_active(); тут оставим заглушку.
+        await update.message.reply_text("ℹ️ Режим без user_id: пока поддержан только точечный AFK.\nПример: /assignw_recon vrn3 123456789 family")
+        return
+
+    res = recon_repo.recon_on_afk(user_id=afk_user_id, group_key=group_key, now_local=datetime.now(MSK), mode=mode)
+    text = [
+        f"🔁 Реконфигурация (mode={mode or config.FAMILY_RECON_DEFAULT_MODE}) для группы <b>{group_key}</b>, user=<code>{afk_user_id}</code>",
+        f"kept={res['kept']}, reassigned={res['reassigned']}, degraded={res['degraded']}, skipped={res['skipped']}",
+        "",
+        "<b>Детали:</b>"
+    ]
+    for d in res["details"]:
+        text.append(f"• {d}")
+
+    await update.message.reply_text("\n".join(text), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 async def assignw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """

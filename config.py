@@ -30,10 +30,18 @@ class Config:
     # Admin settings
     DEFAULT_ADMIN_IDS = [int(x) for x in os.getenv('DEFAULT_ADMIN_IDS', '').split(',') if x]
 
-    # чат для мониторинга AFK
-    #WORK_CHAT_ID = -1003096721091  # ID суперчата
-    #WORK_TOPIC_ID = 9  # ID темы внутри чата "Рабочий график"
-    #WORK_TOPIC_TITLE = "Рабочий график"  # опционально, только для информации
+    # === Family assignment / recon settings ===
+    FAMILY_RECON_DEFAULT_MODE = "SOFT"  # SOFT | FAMILY | GROUP
+    FAMILY_RECON_THROTTLE_SEC = 180  # защита от флаппинга: не чаще 1 раза в N секунд на (user,family)
+
+    # Приоритетная карта преемников (если нет таблицы или как дефолт):
+    # { (group_key, family_key): [user_id, ...] }
+    FAMILY_SUCCESSOR_MAP_DEFAULT = {
+        # ("vrn3", "monitoring"): [111, 222],   # пример
+    }
+
+    # Настройка "якорной" группы (не трогаем при чужой смене)
+    ANCHOR_GROUPS = set(["vrn1", "vrn2", "vrn3", "vrn4"])  # по смыслу: VRN-группы
 
 
 # Проверяем обязательные переменные

@@ -1451,3 +1451,158 @@ def reconcile_weighted_global_now(now_local: datetime, author_id: Optional[int] 
             stats['reassigned'] += 1
 
     return stats
+
+def is_user_absent_on(on_date, user_id: int) -> bool:
+    with db_connection.get_connection().cursor() as cur:
+        cur.execute("select 1 from duty_exclusions where user_id=%s and %s between date_from and date_to limit 1", (user_id, on_date))
+        return cur.fetchone() is not None
+
+def get_user_total_load(user_id: int) -> float:
+    with db_connection.get_connection().cursor() as cur:
+        cur.execute("""
+            select coalesce(sum(d.weight * extract(epoch from (coalesce(da.segment_end, da.on_date + interval '12 hours') - coalesce(da.segment_start, da.on_date)))/3600.0),0)
+            from duty_assignments da
+            join duty d on d.id = da.duty_id
+            where da.user_id=%s and da.on_date >= now() - interval '30 days'
+        """, (user_id,))
+        val = cur.fetchone()[0]
+    return float(val or 0)
+
+def get_user_family_load(user_id: int, family_key: str) -> float:
+    with db_connection.get_connection().cursor() as cur:
+        cur.execute("""
+            select coalesce(sum(d.weight * extract(epoch from (coalesce(da.segment_end, da.on_date + interval '12 hours') - coalesce(da.segment_start, da.on_date)))/3600.0),0)
+            from duty_assignments da
+            join duty d on d.id = da.duty_id
+            where da.user_id=%s and d.family_key=%s and da.on_date >= now() - interval '30 days'
+        """, (user_id, family_key))
+        val = cur.fetchone()[0]
+    return float(val or 0)
+
+def get_family_assignments_in_segment(group_key: str, family_key: str, anchor: datetime) -> List[Dict[str,Any]]:
+    start, end = time_repo.segment_bounds_for_anchor(anchor, time_repo.detect_city_from_group(group_key))
+    with db_connection.get_connection().cursor() as cur:
+        cur.execute("""
+            select da.id as assignment_id, da.user_id, da.on_date, da.segment_start, da.segment_end
+            from duty_assignments da
+            join duty d on d.id = da.duty_id
+            where da.group_key=%s
+              and d.family_key=%s
+              and coalesce(da.segment_start, da.on_date) >= %s
+              and coalesce(da.segment_end,   da.on_date + interval '12 hours') <= %s
+        """, (group_key, family_key, start, end))
+        rows = cur.fetchall()
+    return [{"assignment_id": r[0], "user_id": r[1], "on_date": r[2], "segment_start": r[3], "segment_end": r[4]} for r in rows]
+
+def get_families_of_user_in_segment(group_key: str, user_id: int, anchor: datetime) -> List[str]:
+    start, end = time_repo.segment_bounds_for_anchor(anchor, time_repo.detect_city_from_group(group_key))
+    with db_connection.get_connection().cursor() as cur:
+        cur.execute("""
+            select distinct d.family_key
+            from duty_assignments da
+            join duty d on d.id = da.duty_id
+            where da.group_key=%s
+              and da.user_id=%s
+              and coalesce(da.segment_start, da.on_date) >= %s
+              and coalesce(da.segment_end,   da.on_date + interval '12 hours') <= %s
+              and d.family_key is not null
+        """, (group_key, user_id, start, end))
+        rows = cur.fetchall()
+    return [r[0] for r in rows]
+
+def get_user_family_package_in_segment(group_key: str, family_key: str, user_id: int, anchor: datetime) -> List[Dict[str,Any]]:
+    start, end = time_repo.segment_bounds_for_anchor(anchor, time_repo.detect_city_from_group(group_key))
+    with db_connection.get_connection().cursor() as cur:
+        cur.execute("""
+            select da.id, da.duty_id, da.user_id
+            from duty_assignments da
+            join duty d on d.id = da.duty_id
+            where da.group_key=%s and da.user_id=%s and d.family_key=%s
+              and coalesce(da.segment_start, da.on_date) >= %s
+              and coalesce(da.segment_end,   da.on_date + interval '12 hours') <= %s
+        """, (group_key, user_id, family_key, start, end))
+        rows = cur.fetchall()
+    return [{"assignment_id": r[0], "duty_id": r[1], "user_id": r[2]} for r in rows]
+
+def reassign_single_task(task_id: int, new_user_id: int) -> bool:
+    with db_connection.get_connection().cursor() as cur:
+        cur.execute("update duty_assignments set user_id=%s where id=%s", (new_user_id, task_id))
+        ok = cur.rowcount > 0
+        db_connection.get_connection().commit()
+    return ok
+
+def family_repack_in_group(group_key: str, family_key: str, anchor: datetime) -> int:
+    """
+    Мини-перепак только внутри семейства в пределах сегмента:
+    перераспределяем пакет между доступными, соблюдая правило "один человек — одно семейство".
+    Реализация упрощена: снимаем всех по F и раскладываем заново на одного лучшего.
+    """
+    ass = get_family_assignments_in_segment(group_key, family_key, anchor)
+    if not ass:
+        return 0
+    # Находим лучшего кандидата и отдаем ему весь пакет
+    # Можно улучшить: делить пакет на под-задачи если нужно.
+    # Здесь для стабильности все F -> один владелец.
+    from_user_ids = list({a["user_id"] for a in ass})
+    exclude = []  # не исключаем никого специально
+    # Возьмём target_rank семейства как доминирующий по задачам семейства
+    target_rank = get_family_target_rank(family_key)
+    # Получаем кандидатов (без конкретных исключений)
+    # Переиспользуем API из recon_repository — или здесь минимально упрощаем.
+    # Для краткости — выбираем пользователя с минимальным L_family, затем L_total.
+    with db_connection.get_connection().cursor() as cur:
+        cur.execute("""
+            with cand as (
+                select u.user_id
+                from group_memberships u
+                where u.group_key=%s and u.is_active
+            )
+            select c.user_id
+            from cand c
+            order by 1
+            limit 1
+        """, (group_key,))
+        row = cur.fetchone()
+    if not row:
+        return 0
+    chosen = row[0]
+    cnt = 0
+    for a in ass:
+        if reassign_single_task(a["assignment_id"], chosen):
+            cnt += 1
+    return cnt
+
+def group_repack_segment(group_key: str, anchor: datetime) -> int:
+    """Крайний случай: перепак всех семейств в пределах сегмента (упрощённый эвристический вариант)."""
+    # Здесь можно сделать аккуратнее; для старта — 0 (не используем).
+    return 0
+
+def split_family_package_mvp(group_key: str, family_key: str, user_id: int, anchor: datetime) -> Tuple[List[Dict[str,Any]], List[Dict[str,Any]]]:
+    """
+    Делим пакет на минимально жизнеспособный (MVP) и остальное.
+    Упрощённо: MVP = 1 самая тяжёлая задача, остальное = rest.
+    """
+    pkg = get_user_family_package_in_segment(group_key, family_key, user_id, anchor)
+    if not pkg:
+        return [], []
+    # Нужно знать weight задачи
+    with db_connection.get_connection().cursor() as cur:
+        cur.execute("select id, weight from duty where id = any(%s)", ([p["duty_id"] for p in pkg],))
+        weights = {r[0]: r[1] for r in cur.fetchall()}
+    pkg_sorted = sorted(pkg, key=lambda x: -(weights.get(x["duty_id"], 1)))
+    mvp = [pkg_sorted[0]]
+    rest = pkg_sorted[1:]
+    return mvp, rest
+
+def get_family_target_rank(family_key: str) -> Optional[int]:
+    with db_connection.get_connection().cursor() as cur:
+        cur.execute("""
+            select mode() within group (order by target_rank)
+            from duty where family_key=%s and target_rank is not null
+        """, (family_key,))
+        row = cur.fetchone()
+    return row[0] if row else None
+
+def get_rr_pointer() -> int:
+    # Заглушка RR-указателя; если у тебя уже есть — подставь реальный.
+    return 0

@@ -25,6 +25,8 @@ def _row_to_dict(row) -> Dict[str, Any]:
         "office_required": bool(row["office_required"]),
         "target_rank": row["target_rank"],
         "min_rank": row["min_rank"],
+        "family_key": row.get("family_key"),          # NEW
+        "handoff_policy": row.get("handoff_policy"),  # NEW
         "description": row["description"],
         "is_active": bool(row["is_active"]),
         "created_at": row["created_at"],
@@ -39,12 +41,15 @@ def fetch_catalog(search: Optional[str] = None, limit: int = 500) -> List[Dict[s
     """
     conn = db_connection.get_connection()
     with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+        base_sql = """
+            SELECT key, title, weight, office_required, target_rank, min_rank,
+                   family_key, handoff_policy, description, is_active, created_at
+            FROM duty
+            WHERE is_active = TRUE
+        """
         if search:
             cur.execute(
-                """
-                SELECT key, title, weight, office_required, target_rank, min_rank, description, is_active, created_at
-                FROM duty
-                WHERE is_active = TRUE
+                base_sql + """
                   AND (key ILIKE %s OR title ILIKE %s OR COALESCE(description, '') ILIKE %s)
                 ORDER BY key
                 LIMIT %s
@@ -53,10 +58,7 @@ def fetch_catalog(search: Optional[str] = None, limit: int = 500) -> List[Dict[s
             )
         else:
             cur.execute(
-                """
-                SELECT key, title, weight, office_required, target_rank, min_rank, description, is_active, created_at
-                FROM duty
-                WHERE is_active = TRUE
+                base_sql + """
                 ORDER BY key
                 LIMIT %s
                 """,
@@ -74,7 +76,8 @@ def get_by_key(key: str) -> Optional[Dict[str, Any]]:
     with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
         cur.execute(
             """
-            SELECT key, title, weight, office_required, target_rank, min_rank, description, is_active, created_at
+            SELECT key, title, weight, office_required, target_rank, min_rank,
+                   family_key, handoff_policy, description, is_active, created_at
             FROM duty WHERE key=%s
             """,
             (key,),
@@ -103,7 +106,8 @@ def upsert_duty(data: Dict[str, Any]) -> str:
     Правила:
     - key и title обязательны.
     - если запись уже существует, обновляются: title, description, weight,
-      office_required, target_rank (если не NULL), min_rank (если не NULL).
+      office_required, target_rank (если не NULL), min_rank (если не NULL),
+      family_key (если передан), handoff_policy (если передан).
     - is_active всегда устанавливается в TRUE.
     """
     key = str(data.get("key") or "").strip()
@@ -120,22 +124,46 @@ def upsert_duty(data: Dict[str, Any]) -> str:
     min_rank = data.get("min_rank")
     description = (data.get("description") or "").strip()
 
+    # NEW (опциональные поля)
+    family_key = (data.get("family_key") or None)
+    handoff_policy = (data.get("handoff_policy") or None)
+
     conn = db_connection.get_connection()
     with conn.cursor() as cur:
+        # Убедимся, что колонки есть (если уже применил миграцию — no-op)
+        cur.execute("""
+            do $$
+            begin
+                if not exists(select 1 from information_schema.columns
+                              where table_name='duty' and column_name='family_key') then
+                    alter table duty add column family_key text;
+                end if;
+                if not exists(select 1 from information_schema.columns
+                              where table_name='duty' and column_name='handoff_policy') then
+                    alter table duty add column handoff_policy text
+                      check (handoff_policy in ('segment_end','sticky_until_invalid','handoff_to_successor'));
+                end if;
+            end $$;
+        """)
+
         cur.execute(
             """
-            INSERT INTO duty (key, title, description, weight, office_required, target_rank, min_rank, is_active)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,TRUE)
+            INSERT INTO duty (key, title, description, weight, office_required,
+                              target_rank, min_rank, family_key, handoff_policy, is_active)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,TRUE)
             ON CONFLICT (key) DO UPDATE SET
-              title=EXCLUDED.title,
-              description=EXCLUDED.description,
-              weight=EXCLUDED.weight,
-              office_required=EXCLUDED.office_required,
-              target_rank = COALESCE(EXCLUDED.target_rank, duty.target_rank),
-              min_rank    = COALESCE(EXCLUDED.min_rank, duty.min_rank),
-              is_active=TRUE
+              title          = EXCLUDED.title,
+              description    = EXCLUDED.description,
+              weight         = EXCLUDED.weight,
+              office_required= EXCLUDED.office_required,
+              target_rank    = COALESCE(EXCLUDED.target_rank, duty.target_rank),
+              min_rank       = COALESCE(EXCLUDED.min_rank, duty.min_rank),
+              family_key     = COALESCE(EXCLUDED.family_key, duty.family_key),
+              handoff_policy = COALESCE(EXCLUDED.handoff_policy, duty.handoff_policy),
+              is_active      = TRUE
             """,
-            (key, title, description, weight, office_required, target_rank, min_rank),
+            (key, title, description, weight, office_required,
+             target_rank, min_rank, family_key, handoff_policy),
         )
         conn.commit()
     return key
